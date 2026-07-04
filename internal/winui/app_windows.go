@@ -45,16 +45,19 @@ const (
 	WM_ERASEBKGND      = 0x0014
 	WM_COMMAND         = 0x0111
 	WM_TIMER           = 0x0113
+	WM_VSCROLL         = 0x0115
 	WM_CTLCOLORSTATIC  = 0x0138
 	WM_CTLCOLORLISTBOX = 0x0134
 	WM_CTLCOLOREDIT    = 0x0133
 	WM_CTLCOLORBTN     = 0x0135
+	WM_MOUSEWHEEL      = 0x020A
 	WM_LBUTTONDBLCLK   = 0x0203
 	WM_RBUTTONUP       = 0x0205
 	WM_APP             = 0x8000
 	WM_SETFONT         = 0x0030
 	WM_GETTEXT         = 0x000D
 	WM_GETTEXTLENGTH   = 0x000E
+	WM_SETREDRAW       = 0x000B
 	WM_SETICON         = 0x0080
 
 	BM_GETCHECK = 0x00F0
@@ -78,17 +81,33 @@ const (
 	CBN_DBLCLK       = 2
 	LBN_DBLCLK       = 2
 
-	SIZE_MINIMIZED  = 1
-	COLOR_WINDOW    = 5
-	IDC_ARROW       = 32512
-	IDI_APPLICATION = 32512
-	ICON_SMALL      = 0
-	ICON_BIG        = 1
-	APP_ICON_ID     = 101
-	SM_XVIRTUAL     = 76
-	SM_YVIRTUAL     = 77
-	SM_CXVIRTUAL    = 78
-	SM_CYVIRTUAL    = 79
+	SIZE_MINIMIZED   = 1
+	COLOR_WINDOW     = 5
+	SB_VERT          = 1
+	SB_LINEUP        = 0
+	SB_LINEDOWN      = 1
+	SB_PAGEUP        = 2
+	SB_PAGEDOWN      = 3
+	SB_THUMBPOSITION = 4
+	SB_THUMBTRACK    = 5
+	SB_TOP           = 6
+	SB_BOTTOM        = 7
+	SIF_RANGE        = 0x0001
+	SIF_PAGE         = 0x0002
+	SIF_POS          = 0x0004
+	SIF_ALL          = SIF_RANGE | SIF_PAGE | SIF_POS
+	WHEEL_DELTA      = 120
+	RDW_INVALIDATE   = 0x0001
+	RDW_ALLCHILDREN  = 0x0080
+	IDC_ARROW        = 32512
+	IDI_APPLICATION  = 32512
+	ICON_SMALL       = 0
+	ICON_BIG         = 1
+	APP_ICON_ID      = 101
+	SM_XVIRTUAL      = 76
+	SM_YVIRTUAL      = 77
+	SM_CXVIRTUAL     = 78
+	SM_CYVIRTUAL     = 79
 
 	WM_TRAY_ICON    = WM_APP + 10
 	WM_STATUS_READY = WM_APP + 11
@@ -109,8 +128,11 @@ const (
 	ID_NONE  = 104
 	ID_SAVE  = 105
 
-	rowBase = 1000
-	rowStep = 10
+	rowBase          = 1000
+	rowStep          = 10
+	rowStartY        = 96
+	rowHeight        = 64
+	rowBottomPadding = 16
 )
 
 var (
@@ -135,11 +157,13 @@ var (
 	procGetWindowText    = user32.NewProc("GetWindowTextW")
 	procGetWindowTextLen = user32.NewProc("GetWindowTextLengthW")
 	procMoveWindow       = user32.NewProc("MoveWindow")
+	procRedrawWindow     = user32.NewProc("RedrawWindow")
 	procDestroyWindow    = user32.NewProc("DestroyWindow")
 	procLoadCursor       = user32.NewProc("LoadCursorW")
 	procLoadIcon         = user32.NewProc("LoadIconW")
 	procSetTimer         = user32.NewProc("SetTimer")
 	procKillTimer        = user32.NewProc("KillTimer")
+	procSetScrollInfo    = user32.NewProc("SetScrollInfo")
 	procGetClientRect    = user32.NewProc("GetClientRect")
 	procGetWindowRect    = user32.NewProc("GetWindowRect")
 	procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
@@ -200,6 +224,15 @@ type notifyIconData struct {
 	HIcon            uintptr
 	SzTip            [128]uint16
 }
+type scrollInfo struct {
+	CbSize    uint32
+	FMask     uint32
+	NMin      int32
+	NMax      int32
+	NPage     uint32
+	NPos      int32
+	NTrackPos int32
+}
 type openFileName struct {
 	StructSize    uint32
 	HwndOwner     uintptr
@@ -234,6 +267,7 @@ type rowControls struct {
 	status        uintptr
 	selectProcess uintptr
 	remove        uintptr
+	visible       bool
 }
 
 type appState struct {
@@ -245,6 +279,7 @@ type appState struct {
 	panelBrush uintptr
 	cfg        config.File
 	rows       []rowControls
+	scrollY    int32
 	mu         sync.Mutex
 	saveMu     sync.Mutex
 
@@ -293,7 +328,7 @@ func runWindow() int {
 	if !isWindowRectVisible(x, y, win.W, win.H) {
 		x, y = 100, 100
 	}
-	hwnd := createWindow(0, className, utf16Ptr("程序启动管理器"), WS_OVERLAPPEDWINDOW|WS_VISIBLE, x, y, win.W, win.H, 0, 0, hinst, 0)
+	hwnd := createWindow(0, className, utf16Ptr("程序启动管理器"), WS_OVERLAPPEDWINDOW|WS_VISIBLE|WS_VSCROLL, x, y, win.W, win.H, 0, 0, hinst, 0)
 	app.hwnd = hwnd
 	procShowWindow.Call(hwnd, SW_SHOWNORMAL)
 	procUpdateWindow.Call(hwnd)
@@ -333,6 +368,12 @@ func wndProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
 			return 0
 		}
 		layout(hwnd)
+		return 0
+	case WM_VSCROLL:
+		handleScroll(hwnd, loword(uint32(wparam)), hiword(uint32(wparam)))
+		return 0
+	case WM_MOUSEWHEEL:
+		handleMouseWheel(hwnd, hiword(uint32(wparam)))
 		return 0
 	case WM_TIMER:
 		requestStatusRefresh()
@@ -432,6 +473,7 @@ func rebuildRows(hwnd uintptr) {
 			status:        edit(hwnd, "", 0, 0, 158, 30, id+4, true),
 			selectProcess: button(hwnd, "选择进程", 0, 0, 86, 30, id+5),
 			remove:        button(hwnd, "×", 0, 0, 72, 30, id+6),
+			visible:       true,
 		}
 		if item.Enabled {
 			procSendMessage.Call(rc.check, BM_SETCHECK, BST_CHECKED, 0)
@@ -447,8 +489,11 @@ func layout(hwnd uintptr) {
 	var rc rect
 	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
 	width := rc.Right - rc.Left
-	for i, r := range app.rows {
-		y := int32(96 + i*64)
+	clampScroll(hwnd, rc.Bottom-rc.Top)
+	for i := range app.rows {
+		r := &app.rows[i]
+		y := int32(rowStartY+i*rowHeight) - app.scrollY
+		visible := y >= rowStartY && y < rc.Bottom
 		move(r.check, 20, y+8, 18, 18)
 		pathW := width - 550
 		if pathW < 250 {
@@ -469,7 +514,160 @@ func layout(hwnd uintptr) {
 		move(r.selectProcess, x, y, 86, 30)
 		x += 92
 		move(r.remove, x, y, 72, 30)
+		setRowVisible(r, visible)
 	}
+	updateScrollBar(hwnd, rc.Bottom-rc.Top)
+	redraw(hwnd)
+}
+
+func handleScroll(hwnd uintptr, code uint16, thumb uint16) {
+	var rc rect
+	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+	listH := listViewportHeight(rc.Bottom - rc.Top)
+	pos := app.scrollY
+	switch code {
+	case SB_LINEUP:
+		pos -= rowHeight
+	case SB_LINEDOWN:
+		pos += rowHeight
+	case SB_PAGEUP:
+		pos -= scrollPage(listH)
+	case SB_PAGEDOWN:
+		pos += scrollPage(listH)
+	case SB_THUMBPOSITION, SB_THUMBTRACK:
+		pos = int32(thumb)
+	case SB_TOP:
+		pos = 0
+	case SB_BOTTOM:
+		pos = maxScroll(listH)
+	}
+	setScroll(hwnd, pos)
+}
+
+func handleMouseWheel(hwnd uintptr, deltaWord uint16) {
+	delta := int16(deltaWord)
+	if delta == 0 {
+		return
+	}
+	lines := int32(delta) / WHEEL_DELTA
+	if lines == 0 {
+		if delta > 0 {
+			lines = 1
+		} else {
+			lines = -1
+		}
+	}
+	setScroll(hwnd, app.scrollY-lines*rowHeight)
+}
+
+func setScroll(hwnd uintptr, pos int32) {
+	var rc rect
+	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+	listH := listViewportHeight(rc.Bottom - rc.Top)
+	max := snapScroll(maxScroll(listH))
+	if pos < 0 {
+		pos = 0
+	}
+	pos = snapScroll(pos)
+	if pos > max {
+		pos = max
+	}
+	if pos == app.scrollY {
+		updateScrollBar(hwnd, rc.Bottom-rc.Top)
+		return
+	}
+	app.scrollY = pos
+	layout(hwnd)
+}
+
+func scrollToBottom(hwnd uintptr) {
+	var rc rect
+	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+	app.scrollY = snapScroll(maxScroll(listViewportHeight(rc.Bottom - rc.Top)))
+}
+
+func clampScroll(hwnd uintptr, clientH int32) {
+	max := snapScroll(maxScroll(listViewportHeight(clientH)))
+	if app.scrollY > max {
+		app.scrollY = max
+	}
+	if app.scrollY < 0 {
+		app.scrollY = 0
+	}
+	app.scrollY = snapScroll(app.scrollY)
+}
+
+func updateScrollBar(hwnd uintptr, clientH int32) {
+	listH := listViewportHeight(clientH)
+	max := contentHeight() - 1
+	if max < 0 {
+		max = 0
+	}
+	page := uint32(listH)
+	if page < 1 {
+		page = 1
+	}
+	si := scrollInfo{
+		CbSize: uint32(unsafe.Sizeof(scrollInfo{})),
+		FMask:  SIF_ALL,
+		NMin:   0,
+		NMax:   max,
+		NPage:  page,
+		NPos:   app.scrollY,
+	}
+	procSetScrollInfo.Call(hwnd, SB_VERT, uintptr(unsafe.Pointer(&si)), 1)
+}
+
+func scrollPage(clientH int32) int32 {
+	page := clientH
+	if page < rowHeight {
+		return rowHeight
+	}
+	return snapScroll(page)
+}
+
+func maxScroll(clientH int32) int32 {
+	max := contentHeight() - clientH
+	if max < 0 {
+		return 0
+	}
+	return max
+}
+
+func contentHeight() int32 {
+	if len(app.rows) == 0 {
+		return 0
+	}
+	return int32(len(app.rows)*rowHeight + rowBottomPadding)
+}
+
+func listViewportHeight(clientH int32) int32 {
+	h := clientH - rowStartY
+	if h < rowHeight {
+		return rowHeight
+	}
+	return h
+}
+
+func snapScroll(pos int32) int32 {
+	if pos <= 0 {
+		return 0
+	}
+	return (pos / rowHeight) * rowHeight
+}
+
+func setRowVisible(r *rowControls, visible bool) {
+	if r.visible == visible {
+		return
+	}
+	show := uintptr(SW_HIDE)
+	if visible {
+		show = SW_SHOW
+	}
+	for _, h := range []uintptr{r.check, r.path, r.browse, r.uwp, r.status, r.selectProcess, r.remove} {
+		procShowWindow.Call(h, show)
+	}
+	r.visible = visible
 }
 
 func handleCommand(hwnd uintptr, id uint16, code uint16, lparam uintptr) {
@@ -498,6 +696,7 @@ func handleCommand(hwnd uintptr, id uint16, code uint16, lparam uintptr) {
 	case ID_ADD:
 		app.cfg.Programs = append(app.cfg.Programs, config.ProgramItem{Enabled: true})
 		rebuildRows(hwnd)
+		scrollToBottom(hwnd)
 		layout(hwnd)
 		markAutoSaveDirty()
 		needsRefresh = true
@@ -970,7 +1169,10 @@ func createWindow(exStyle uint32, class, text *uint16, style uint32, x, y, w, h 
 	return ret
 }
 func move(hwnd uintptr, x, y, w, h int32) {
-	procMoveWindow.Call(hwnd, uintptr(x), uintptr(y), uintptr(w), uintptr(h), 1)
+	procMoveWindow.Call(hwnd, uintptr(x), uintptr(y), uintptr(w), uintptr(h), 0)
+}
+func redraw(hwnd uintptr) {
+	procRedrawWindow.Call(hwnd, 0, 0, RDW_INVALIDATE|RDW_ALLCHILDREN)
 }
 func setText(hwnd uintptr, text string) {
 	procSetWindowText.Call(hwnd, uintptr(unsafe.Pointer(utf16Ptr(text))))
