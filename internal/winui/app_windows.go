@@ -42,6 +42,7 @@ const (
 	WM_MOVE            = 0x0003
 	WM_SIZE            = 0x0005
 	WM_CLOSE           = 0x0010
+	WM_GETMINMAXINFO   = 0x0024
 	WM_ERASEBKGND      = 0x0014
 	WM_COMMAND         = 0x0111
 	WM_TIMER           = 0x0113
@@ -81,33 +82,36 @@ const (
 	CBN_DBLCLK       = 2
 	LBN_DBLCLK       = 2
 
-	SIZE_MINIMIZED   = 1
-	COLOR_WINDOW     = 5
-	SB_VERT          = 1
-	SB_LINEUP        = 0
-	SB_LINEDOWN      = 1
-	SB_PAGEUP        = 2
-	SB_PAGEDOWN      = 3
-	SB_THUMBPOSITION = 4
-	SB_THUMBTRACK    = 5
-	SB_TOP           = 6
-	SB_BOTTOM        = 7
-	SIF_RANGE        = 0x0001
-	SIF_PAGE         = 0x0002
-	SIF_POS          = 0x0004
-	SIF_ALL          = SIF_RANGE | SIF_PAGE | SIF_POS
-	WHEEL_DELTA      = 120
-	RDW_INVALIDATE   = 0x0001
-	RDW_ALLCHILDREN  = 0x0080
-	IDC_ARROW        = 32512
-	IDI_APPLICATION  = 32512
-	ICON_SMALL       = 0
-	ICON_BIG         = 1
-	APP_ICON_ID      = 101
-	SM_XVIRTUAL      = 76
-	SM_YVIRTUAL      = 77
-	SM_CXVIRTUAL     = 78
-	SM_CYVIRTUAL     = 79
+	SIZE_MINIMIZED           = 1
+	COLOR_WINDOW             = 5
+	SB_VERT                  = 1
+	SB_LINEUP                = 0
+	SB_LINEDOWN              = 1
+	SB_PAGEUP                = 2
+	SB_PAGEDOWN              = 3
+	SB_THUMBPOSITION         = 4
+	SB_THUMBTRACK            = 5
+	SB_TOP                   = 6
+	SB_BOTTOM                = 7
+	SIF_RANGE                = 0x0001
+	SIF_PAGE                 = 0x0002
+	SIF_POS                  = 0x0004
+	SIF_ALL                  = SIF_RANGE | SIF_PAGE | SIF_POS
+	WHEEL_DELTA              = 120
+	RDW_INVALIDATE           = 0x0001
+	RDW_ERASE                = 0x0004
+	RDW_ALLCHILDREN          = 0x0080
+	IDC_ARROW                = 32512
+	IDI_APPLICATION          = 32512
+	ICON_SMALL               = 0
+	ICON_BIG                 = 1
+	APP_ICON_ID              = 101
+	SM_XVIRTUAL              = 76
+	SM_YVIRTUAL              = 77
+	SM_CXSCREEN              = 0
+	SM_CXVIRTUAL             = 78
+	SM_CYVIRTUAL             = 79
+	MONITOR_DEFAULTTONEAREST = 2
 
 	WM_TRAY_ICON    = WM_APP + 10
 	WM_STATUS_READY = WM_APP + 11
@@ -142,46 +146,49 @@ var (
 	shell32  = syscall.NewLazyDLL("shell32.dll")
 	comdlg32 = syscall.NewLazyDLL("comdlg32.dll")
 
-	procDefWindowProc    = user32.NewProc("DefWindowProcW")
-	procRegisterClassEx  = user32.NewProc("RegisterClassExW")
-	procCreateWindowEx   = user32.NewProc("CreateWindowExW")
-	procShowWindow       = user32.NewProc("ShowWindow")
-	procUpdateWindow     = user32.NewProc("UpdateWindow")
-	procGetMessage       = user32.NewProc("GetMessageW")
-	procTranslateMessage = user32.NewProc("TranslateMessage")
-	procDispatchMessage  = user32.NewProc("DispatchMessageW")
-	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
-	procPostMessage      = user32.NewProc("PostMessageW")
-	procSendMessage      = user32.NewProc("SendMessageW")
-	procSetWindowText    = user32.NewProc("SetWindowTextW")
-	procGetWindowText    = user32.NewProc("GetWindowTextW")
-	procGetWindowTextLen = user32.NewProc("GetWindowTextLengthW")
-	procMoveWindow       = user32.NewProc("MoveWindow")
-	procRedrawWindow     = user32.NewProc("RedrawWindow")
-	procDestroyWindow    = user32.NewProc("DestroyWindow")
-	procLoadCursor       = user32.NewProc("LoadCursorW")
-	procLoadIcon         = user32.NewProc("LoadIconW")
-	procSetTimer         = user32.NewProc("SetTimer")
-	procKillTimer        = user32.NewProc("KillTimer")
-	procSetScrollInfo    = user32.NewProc("SetScrollInfo")
-	procGetClientRect    = user32.NewProc("GetClientRect")
-	procGetWindowRect    = user32.NewProc("GetWindowRect")
-	procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
-	procIsIconic         = user32.NewProc("IsIconic")
-	procIsWindowVisible  = user32.NewProc("IsWindowVisible")
-	procFillRect         = user32.NewProc("FillRect")
-	procMessageBox       = user32.NewProc("MessageBoxW")
-	procEnableWindow     = user32.NewProc("EnableWindow")
-	procSetForeground    = user32.NewProc("SetForegroundWindow")
-	procCreatePopupMenu  = user32.NewProc("CreatePopupMenu")
-	procAppendMenu       = user32.NewProc("AppendMenuW")
-	procTrackPopupMenu   = user32.NewProc("TrackPopupMenu")
-	procGetCursorPos     = user32.NewProc("GetCursorPos")
-	procDestroyMenu      = user32.NewProc("DestroyMenu")
-	procGetDlgItem       = user32.NewProc("GetDlgItem")
-	procGetParent        = user32.NewProc("GetParent")
+	procDefWindowProc     = user32.NewProc("DefWindowProcW")
+	procRegisterClassEx   = user32.NewProc("RegisterClassExW")
+	procCreateWindowEx    = user32.NewProc("CreateWindowExW")
+	procShowWindow        = user32.NewProc("ShowWindow")
+	procUpdateWindow      = user32.NewProc("UpdateWindow")
+	procGetMessage        = user32.NewProc("GetMessageW")
+	procTranslateMessage  = user32.NewProc("TranslateMessage")
+	procDispatchMessage   = user32.NewProc("DispatchMessageW")
+	procPostQuitMessage   = user32.NewProc("PostQuitMessage")
+	procPostMessage       = user32.NewProc("PostMessageW")
+	procSendMessage       = user32.NewProc("SendMessageW")
+	procSetWindowText     = user32.NewProc("SetWindowTextW")
+	procGetWindowText     = user32.NewProc("GetWindowTextW")
+	procGetWindowTextLen  = user32.NewProc("GetWindowTextLengthW")
+	procMoveWindow        = user32.NewProc("MoveWindow")
+	procRedrawWindow      = user32.NewProc("RedrawWindow")
+	procDestroyWindow     = user32.NewProc("DestroyWindow")
+	procLoadCursor        = user32.NewProc("LoadCursorW")
+	procLoadIcon          = user32.NewProc("LoadIconW")
+	procSetTimer          = user32.NewProc("SetTimer")
+	procKillTimer         = user32.NewProc("KillTimer")
+	procSetScrollInfo     = user32.NewProc("SetScrollInfo")
+	procGetClientRect     = user32.NewProc("GetClientRect")
+	procGetWindowRect     = user32.NewProc("GetWindowRect")
+	procMonitorFromWindow = user32.NewProc("MonitorFromWindow")
+	procGetMonitorInfo    = user32.NewProc("GetMonitorInfoW")
+	procGetSystemMetrics  = user32.NewProc("GetSystemMetrics")
+	procIsIconic          = user32.NewProc("IsIconic")
+	procIsWindowVisible   = user32.NewProc("IsWindowVisible")
+	procFillRect          = user32.NewProc("FillRect")
+	procMessageBox        = user32.NewProc("MessageBoxW")
+	procEnableWindow      = user32.NewProc("EnableWindow")
+	procSetForeground     = user32.NewProc("SetForegroundWindow")
+	procCreatePopupMenu   = user32.NewProc("CreatePopupMenu")
+	procAppendMenu        = user32.NewProc("AppendMenuW")
+	procTrackPopupMenu    = user32.NewProc("TrackPopupMenu")
+	procGetCursorPos      = user32.NewProc("GetCursorPos")
+	procDestroyMenu       = user32.NewProc("DestroyMenu")
+	procGetDlgItem        = user32.NewProc("GetDlgItem")
+	procGetParent         = user32.NewProc("GetParent")
 
 	procGetModuleHandle  = kernel32.NewProc("GetModuleHandleW")
+	procRtlMoveMemory    = kernel32.NewProc("RtlMoveMemory")
 	procCreateSolidBrush = gdi32.NewProc("CreateSolidBrush")
 	procDeleteObject     = gdi32.NewProc("DeleteObject")
 	procSetTextColor     = gdi32.NewProc("SetTextColor")
@@ -193,6 +200,12 @@ var (
 
 type point struct{ X, Y int32 }
 type rect struct{ Left, Top, Right, Bottom int32 }
+type monitorInfo struct {
+	CbSize    uint32
+	RcMonitor rect
+	RcWork    rect
+	DwFlags   uint32
+}
 type msg struct {
 	HWnd    uintptr
 	Message uint32
@@ -267,6 +280,7 @@ type rowControls struct {
 	status        uintptr
 	selectProcess uintptr
 	remove        uintptr
+	index         int
 	visible       bool
 }
 
@@ -321,6 +335,9 @@ func runWindow() int {
 	if win.W < 640 {
 		win.W = 800
 	}
+	if minW := startupMinWindowWidth(); win.W < minW {
+		win.W = minW
+	}
 	if win.H < 360 {
 		win.H = 594
 	}
@@ -357,7 +374,7 @@ func wndProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
 		procSendMessage.Call(hwnd, WM_SETICON, ICON_SMALL, app.icon)
 		createToolbar(hwnd)
 		rebuildRows(hwnd)
-		layout(hwnd)
+		layout(hwnd, true)
 		addTray(hwnd)
 		procSetTimer.Call(hwnd, ID_TIMER, 1000, 0)
 		requestStatusRefresh()
@@ -367,7 +384,10 @@ func wndProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
 			hideToTray(hwnd)
 			return 0
 		}
-		layout(hwnd)
+		layout(hwnd, true)
+		return 0
+	case WM_GETMINMAXINFO:
+		applyMinWindowSize(hwnd, lparam)
 		return 0
 	case WM_VSCROLL:
 		handleScroll(hwnd, loword(uint32(wparam)), hiword(uint32(wparam)))
@@ -462,37 +482,25 @@ func rebuildRows(hwnd uintptr) {
 		}
 	}
 	app.rows = nil
-	for i := range app.cfg.Programs {
-		id := rowBase + i*rowStep
-		item := app.cfg.Programs[i]
-		rc := rowControls{
-			check:         checkbox(hwnd, 0, 0, 18, 18, id+1),
-			path:          edit(hwnd, item.Path, 0, 0, 260, 30, id+2, false),
-			browse:        button(hwnd, "浏览", 0, 0, 78, 30, id+3),
-			uwp:           checkboxText(hwnd, "UWP", 0, 0, 56, 22, id+7),
-			status:        edit(hwnd, "", 0, 0, 158, 30, id+4, true),
-			selectProcess: button(hwnd, "选择进程", 0, 0, 86, 30, id+5),
-			remove:        button(hwnd, "×", 0, 0, 72, 30, id+6),
-			visible:       true,
-		}
-		if item.Enabled {
-			procSendMessage.Call(rc.check, BM_SETCHECK, BST_CHECKED, 0)
-		}
-		if item.IsUWP {
-			procSendMessage.Call(rc.uwp, BM_SETCHECK, BST_CHECKED, 0)
-		}
-		app.rows = append(app.rows, rc)
-	}
 }
 
-func layout(hwnd uintptr) {
+func layout(hwnd uintptr, erase bool) {
 	var rc rect
 	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
 	width := rc.Right - rc.Left
 	clampScroll(hwnd, rc.Bottom-rc.Top)
+	ensureRowPool(hwnd, visibleRowCapacity(rc.Bottom-rc.Top))
+	first := firstVisibleIndex()
 	for i := range app.rows {
 		r := &app.rows[i]
-		y := int32(rowStartY+i*rowHeight) - app.scrollY
+		idx := first + i
+		if idx >= len(app.cfg.Programs) {
+			setRowVisible(r, false)
+			r.index = -1
+			continue
+		}
+		bindRow(r, idx)
+		y := int32(rowStartY+idx*rowHeight) - app.scrollY
 		visible := y >= rowStartY && y < rc.Bottom
 		move(r.check, 20, y+8, 18, 18)
 		pathW := width - 550
@@ -517,7 +525,42 @@ func layout(hwnd uintptr) {
 		setRowVisible(r, visible)
 	}
 	updateScrollBar(hwnd, rc.Bottom-rc.Top)
-	redraw(hwnd)
+	redraw(hwnd, erase)
+}
+
+func ensureRowPool(hwnd uintptr, count int) {
+	for len(app.rows) < count {
+		slot := len(app.rows)
+		id := rowBase + slot*rowStep
+		app.rows = append(app.rows, rowControls{
+			check:         checkbox(hwnd, 0, 0, 18, 18, id+1),
+			path:          edit(hwnd, "", 0, 0, 260, 30, id+2, false),
+			browse:        button(hwnd, "浏览", 0, 0, 78, 30, id+3),
+			uwp:           checkboxText(hwnd, "UWP", 0, 0, 56, 22, id+7),
+			status:        edit(hwnd, "", 0, 0, 158, 30, id+4, true),
+			selectProcess: button(hwnd, "选择进程", 0, 0, 86, 30, id+5),
+			remove:        button(hwnd, "×", 0, 0, 72, 30, id+6),
+			index:         -1,
+			visible:       true,
+		})
+	}
+}
+
+func bindRow(r *rowControls, idx int) {
+	if idx < 0 || idx >= len(app.cfg.Programs) {
+		return
+	}
+	if r.index == idx {
+		return
+	}
+	item := app.cfg.Programs[idx]
+	app.updatingUI = true
+	defer func() { app.updatingUI = false }()
+	setTextIfChanged(r.path, item.Path)
+	setCheckIfChanged(r.check, item.Enabled)
+	setCheckIfChanged(r.uwp, item.IsUWP)
+	setTextIfChanged(r.status, currentStatusText(item))
+	r.index = idx
 }
 
 func handleScroll(hwnd uintptr, code uint16, thumb uint16) {
@@ -576,8 +619,9 @@ func setScroll(hwnd uintptr, pos int32) {
 		updateScrollBar(hwnd, rc.Bottom-rc.Top)
 		return
 	}
+	syncFromUI()
 	app.scrollY = pos
-	layout(hwnd)
+	layout(hwnd, false)
 }
 
 func scrollToBottom(hwnd uintptr) {
@@ -635,10 +679,10 @@ func maxScroll(clientH int32) int32 {
 }
 
 func contentHeight() int32 {
-	if len(app.rows) == 0 {
+	if len(app.cfg.Programs) == 0 {
 		return 0
 	}
-	return int32(len(app.rows)*rowHeight + rowBottomPadding)
+	return int32(len(app.cfg.Programs)*rowHeight + rowBottomPadding)
 }
 
 func listViewportHeight(clientH int32) int32 {
@@ -647,6 +691,54 @@ func listViewportHeight(clientH int32) int32 {
 		return rowHeight
 	}
 	return h
+}
+
+func visibleRowCapacity(clientH int32) int {
+	if len(app.cfg.Programs) == 0 {
+		return 0
+	}
+	capacity := int(listViewportHeight(clientH)/rowHeight) + 2
+	if capacity > len(app.cfg.Programs) {
+		capacity = len(app.cfg.Programs)
+	}
+	if capacity < 0 {
+		return 0
+	}
+	return capacity
+}
+
+func currentClientHeight(hwnd uintptr) int32 {
+	var rc rect
+	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+	return rc.Bottom - rc.Top
+}
+
+func firstVisibleIndex() int {
+	if app.scrollY <= 0 {
+		return 0
+	}
+	idx := int(app.scrollY / rowHeight)
+	if idx < 0 {
+		return 0
+	}
+	if idx > len(app.cfg.Programs) {
+		return len(app.cfg.Programs)
+	}
+	return idx
+}
+
+func currentStatusText(item config.ProgramItem) string {
+	name := effectiveProcess(item)
+	if name == "" {
+		return "未绑定"
+	}
+	app.statusMu.Lock()
+	running := app.runningSnapshot[strings.ToLower(name)]
+	app.statusMu.Unlock()
+	if running {
+		return name
+	}
+	return "未运行"
 }
 
 func snapScroll(pos int32) int32 {
@@ -694,10 +786,11 @@ func handleCommand(hwnd uintptr, id uint16, code uint16, lparam uintptr) {
 		}
 		needsRefresh = true
 	case ID_ADD:
+		syncFromUI()
 		app.cfg.Programs = append(app.cfg.Programs, config.ProgramItem{Enabled: true})
 		rebuildRows(hwnd)
 		scrollToBottom(hwnd)
-		layout(hwnd)
+		layout(hwnd, true)
 		markAutoSaveDirty()
 		needsRefresh = true
 	case ID_ALL:
@@ -713,14 +806,19 @@ func handleCommand(hwnd uintptr, id uint16, code uint16, lparam uintptr) {
 		saveConfigNotifyAsync(hwnd, cloneConfig(app.cfg))
 	default:
 		if id >= rowBase {
-			idx := int((id - rowBase) / rowStep)
+			slot := int((id - rowBase) / rowStep)
 			part := int((id - rowBase) % rowStep)
-			if idx < 0 || idx >= len(app.rows) {
+			if slot < 0 || slot >= len(app.rows) {
+				return
+			}
+			idx := app.rows[slot].index
+			if idx < 0 || idx >= len(app.cfg.Programs) {
 				return
 			}
 			switch part {
 			case 1, 7:
 				if code == BN_CLICKED {
+					syncFromUI()
 					scheduleAutoSave()
 				}
 			case 2:
@@ -729,7 +827,7 @@ func handleCommand(hwnd uintptr, id uint16, code uint16, lparam uintptr) {
 				}
 			case 3:
 				if path := chooseFile(hwnd); path != "" {
-					setText(app.rows[idx].path, path)
+					setText(app.rows[slot].path, path)
 					if app.cfg.Programs[idx].SelectedProcess == "" {
 						app.cfg.Programs[idx].ProcessName = process.ProcessNameForPath(path)
 					}
@@ -748,7 +846,8 @@ func handleCommand(hwnd uintptr, id uint16, code uint16, lparam uintptr) {
 				syncFromUI()
 				app.cfg.Programs = append(app.cfg.Programs[:idx], app.cfg.Programs[idx+1:]...)
 				rebuildRows(hwnd)
-				layout(hwnd)
+				clampScroll(hwnd, currentClientHeight(hwnd))
+				layout(hwnd, true)
 				markAutoSaveDirty()
 				needsRefresh = true
 			}
@@ -785,13 +884,13 @@ func setAllEnabled(enabled bool) {
 	}
 	app.updatingUI = true
 	defer func() { app.updatingUI = false }()
-	for i, r := range app.rows {
-		if procSendMessageUint(r.check, BM_GETCHECK, 0, 0) != check {
+	for _, r := range app.rows {
+		if r.index >= 0 && procSendMessageUint(r.check, BM_GETCHECK, 0, 0) != check {
 			procSendMessage.Call(r.check, BM_SETCHECK, check, 0)
 		}
-		if i < len(app.cfg.Programs) {
-			app.cfg.Programs[i].Enabled = enabled
-		}
+	}
+	for i := range app.cfg.Programs {
+		app.cfg.Programs[i].Enabled = enabled
 	}
 }
 
@@ -839,15 +938,11 @@ func cloneConfig(cfg config.File) config.File {
 func syncFromUI() {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	if len(app.cfg.Programs) != len(app.rows) {
-		if len(app.cfg.Programs) < len(app.rows) {
-			for len(app.cfg.Programs) < len(app.rows) {
-				app.cfg.Programs = append(app.cfg.Programs, config.ProgramItem{})
-			}
+	for _, r := range app.rows {
+		if r.index < 0 || r.index >= len(app.cfg.Programs) {
+			continue
 		}
-	}
-	for i, r := range app.rows {
-		item := &app.cfg.Programs[i]
+		item := &app.cfg.Programs[r.index]
 		item.Path = getText(r.path)
 		item.Enabled = procSendMessageUint(r.check, BM_GETCHECK, 0, 0) == BST_CHECKED
 		item.IsUWP = procSendMessageUint(r.uwp, BM_GETCHECK, 0, 0) == BST_CHECKED || strings.HasPrefix(strings.ToLower(item.Path), "shell:")
@@ -904,8 +999,11 @@ func applyStatusSnapshot() {
 	app.updatingUI = true
 	defer func() { app.updatingUI = false }()
 
-	for i, r := range app.rows {
-		item := app.cfg.Programs[i]
+	for _, r := range app.rows {
+		if r.index < 0 || r.index >= len(app.cfg.Programs) {
+			continue
+		}
+		item := app.cfg.Programs[r.index]
 		name := effectiveProcess(item)
 		if name == "" {
 			setTextIfChanged(r.status, "未绑定")
@@ -1171,8 +1269,21 @@ func createWindow(exStyle uint32, class, text *uint16, style uint32, x, y, w, h 
 func move(hwnd uintptr, x, y, w, h int32) {
 	procMoveWindow.Call(hwnd, uintptr(x), uintptr(y), uintptr(w), uintptr(h), 0)
 }
-func redraw(hwnd uintptr) {
-	procRedrawWindow.Call(hwnd, 0, 0, RDW_INVALIDATE|RDW_ALLCHILDREN)
+func redraw(hwnd uintptr, erase bool) {
+	flags := uintptr(RDW_INVALIDATE | RDW_ALLCHILDREN)
+	if erase {
+		flags |= RDW_ERASE
+	}
+	procRedrawWindow.Call(hwnd, 0, 0, flags)
+}
+func setCheckIfChanged(hwnd uintptr, checked bool) {
+	want := uintptr(0)
+	if checked {
+		want = BST_CHECKED
+	}
+	if procSendMessageUint(hwnd, BM_GETCHECK, 0, 0) != want {
+		procSendMessage.Call(hwnd, BM_SETCHECK, want, 0)
+	}
 }
 func setText(hwnd uintptr, text string) {
 	procSetWindowText.Call(hwnd, uintptr(unsafe.Pointer(utf16Ptr(text))))
@@ -1244,6 +1355,41 @@ func isWindowStateSavable(hwnd uintptr) bool {
 	visible, _, _ := procIsWindowVisible.Call(hwnd)
 	iconic, _, _ := procIsIconic.Call(hwnd)
 	return visible != 0 && iconic == 0
+}
+
+func applyMinWindowSize(hwnd uintptr, lparam uintptr) {
+	if lparam == 0 {
+		return
+	}
+	minW := monitorWidth(hwnd) / 2
+	writeInt32(lparam+24, minW)
+	writeInt32(lparam+28, 360)
+}
+
+func startupMinWindowWidth() int32 {
+	if w := getSystemMetric(SM_CXSCREEN); w > 0 {
+		return w / 2
+	}
+	return 640
+}
+
+func writeInt32(addr uintptr, value int32) {
+	procRtlMoveMemory.Call(addr, uintptr(unsafe.Pointer(&value)), unsafe.Sizeof(value))
+}
+
+func monitorWidth(hwnd uintptr) int32 {
+	monitor, _, _ := procMonitorFromWindow.Call(hwnd, MONITOR_DEFAULTTONEAREST)
+	if monitor != 0 {
+		mi := monitorInfo{CbSize: uint32(unsafe.Sizeof(monitorInfo{}))}
+		ok, _, _ := procGetMonitorInfo.Call(monitor, uintptr(unsafe.Pointer(&mi)))
+		if ok != 0 && mi.RcMonitor.Right > mi.RcMonitor.Left {
+			return mi.RcMonitor.Right - mi.RcMonitor.Left
+		}
+	}
+	if w := getSystemMetric(SM_CXSCREEN); w > 0 {
+		return w
+	}
+	return 1280
 }
 
 func isWindowRectVisible(x, y, w, h int32) bool {
