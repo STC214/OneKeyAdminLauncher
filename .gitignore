@@ -2,8 +2,14 @@
 /dist/
 /cmd/program-launch-manager/app.syso
 
-# Generated icon from ICO.png
-/ICO.ico
+# Local image/icon assets
+*.ico
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.bmp
+*.gif
 
 # Runtime configuration/state
 /launcher_config.json

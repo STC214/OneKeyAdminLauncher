@@ -53,7 +53,7 @@ cd F:\Project\04_Desktop_Dev_Utilities\OneKeyAdminOpenPro
 dist/程序启动管理器.exe
 ```
 
-构建脚本会将根目录 `ICO.png` 转为多尺寸 `ICO.ico`，再通过 `app.rc` 生成 `app.syso` 并嵌入最终 exe。`ICO.ico`、`app.syso` 和 `dist/` 都是生成产物，不需要提交到仓库。
+构建脚本会将根目录本地素材 `ICO.png` 转为多尺寸 `ICO.ico`，再通过 `app.rc` 生成 `app.syso` 并嵌入最终 exe。图片/图标文件、`app.syso` 和 `dist/` 都不提交到仓库。
 
 ## 项目结构
 
