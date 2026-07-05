@@ -1,0 +1,31 @@
+# Build outputs
+/dist/
+/cmd/program-launch-manager/app.syso
+
+# Local image/icon assets
+*.ico
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.bmp
+*.gif
+
+# Runtime configuration/state
+/launcher_config.json
+/data/
+/**/launcher_config.json
+
+# Local Go build/test artifacts
+*.exe
+*.test
+*.out
+coverage.out
+
+# Editor/OS noise
+.vscode/
+.idea/
+*.swp
+*.tmp
+Thumbs.db
+desktop.ini
