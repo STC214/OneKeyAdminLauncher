@@ -45,6 +45,7 @@ const (
 	WM_SIZE            = 0x0005
 	WM_PAINT           = 0x000F
 	WM_CLOSE           = 0x0010
+	WM_CANCELMODE      = 0x001F
 	WM_GETMINMAXINFO   = 0x0024
 	WM_DRAWITEM        = 0x002B
 	WM_ERASEBKGND      = 0x0014
@@ -59,6 +60,7 @@ const (
 	WM_LBUTTONDOWN     = 0x0201
 	WM_LBUTTONUP       = 0x0202
 	WM_MOUSEWHEEL      = 0x020A
+	WM_CAPTURECHANGED  = 0x0215
 	WM_LBUTTONDBLCLK   = 0x0203
 	WM_RBUTTONUP       = 0x0205
 	WM_APP             = 0x8000
@@ -469,6 +471,10 @@ func wndProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
 			procReleaseCapture.Call()
 			return 0
 		}
+	case WM_CANCELMODE, WM_CAPTURECHANGED:
+		if app != nil {
+			app.scrollDrag = false
+		}
 	case WM_TIMER:
 		requestStatusRefresh()
 		flushAutoSave()
@@ -616,8 +622,10 @@ func layout(hwnd uintptr, erase bool) {
 		move(r.remove, xRemove, rowY, removeW, 32)
 		setRowVisible(r, visible)
 	}
-	updateScrollBar(hwnd, rc.Bottom-rc.Top)
-	redraw(hwnd, erase)
+	updateScrollBar(hwnd, rc.Bottom-rc.Top, erase)
+	if erase {
+		redraw(hwnd, true)
+	}
 }
 
 func ensureRowPool(hwnd uintptr, count int) {
@@ -708,7 +716,7 @@ func setScroll(hwnd uintptr, pos int32) {
 		pos = max
 	}
 	if pos == app.scrollY {
-		updateScrollBar(hwnd, rc.Bottom-rc.Top)
+		updateScrollBar(hwnd, rc.Bottom-rc.Top, false)
 		return
 	}
 	syncFromUI()
@@ -733,14 +741,15 @@ func clampScroll(hwnd uintptr, clientH int32) {
 	app.scrollY = snapScroll(app.scrollY)
 }
 
-func updateScrollBar(hwnd uintptr, clientH int32) {
-	invalidateCustomScrollBar(hwnd)
+func updateScrollBar(hwnd uintptr, clientH int32, erase bool) {
+	invalidateCustomScrollBar(hwnd, erase)
 }
 
 func drawCustomScrollBar(hwnd uintptr, hdc uintptr) {
 	if hdc == 0 {
 		return
 	}
+	clearCustomScrollBarArea(hwnd, hdc)
 	track, thumb, ok := customScrollRects(hwnd)
 	if !ok {
 		return
@@ -751,6 +760,18 @@ func drawCustomScrollBar(hwnd uintptr, hdc uintptr) {
 	defer procDeleteObject.Call(thumbBrush)
 	procFillRect.Call(hdc, uintptr(unsafe.Pointer(&track)), trackBrush)
 	procFillRect.Call(hdc, uintptr(unsafe.Pointer(&thumb)), thumbBrush)
+}
+
+func clearCustomScrollBarArea(hwnd uintptr, hdc uintptr) {
+	var rc rect
+	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+	clear := rect{
+		Left:   rc.Right - scrollbarMargin - scrollbarWidth - 12,
+		Top:    rowStartY,
+		Right:  rc.Right,
+		Bottom: rc.Bottom,
+	}
+	procFillRect.Call(hdc, uintptr(unsafe.Pointer(&clear)), app.bgBrush)
 }
 
 func beginCustomScrollDrag(hwnd uintptr, lparam uintptr) bool {
@@ -838,7 +859,7 @@ func customScrollRects(hwnd uintptr) (rect, rect, bool) {
 	return track, thumb, true
 }
 
-func invalidateCustomScrollBar(hwnd uintptr) {
+func invalidateCustomScrollBar(hwnd uintptr, erase bool) {
 	var rc rect
 	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
 	dirty := rect{
@@ -847,7 +868,11 @@ func invalidateCustomScrollBar(hwnd uintptr) {
 		Right:  rc.Right,
 		Bottom: rc.Bottom,
 	}
-	procInvalidateRect.Call(hwnd, uintptr(unsafe.Pointer(&dirty)), 1)
+	eraseFlag := uintptr(0)
+	if erase {
+		eraseFlag = 1
+	}
+	procInvalidateRect.Call(hwnd, uintptr(unsafe.Pointer(&dirty)), eraseFlag)
 }
 
 func scrollPage(clientH int32) int32 {
@@ -1148,7 +1173,7 @@ func syncFromUI() {
 }
 
 func requestStatusRefresh() {
-	syncFromUI()
+	cfg := cloneConfig(app.cfg)
 
 	app.statusMu.Lock()
 	if app.statusBusy {
@@ -1160,20 +1185,48 @@ func requestStatusRefresh() {
 
 	hwnd := app.hwnd
 	go func() {
-		running := map[string]bool{}
+		runningNames := map[string]bool{}
 		if procs, err := process.List(); err == nil {
 			for _, p := range procs {
-				running[strings.ToLower(p.Name)] = true
+				runningNames[strings.ToLower(p.Name)] = true
 			}
 		}
+		status := configuredProcessStatus(cfg, runningNames)
 
 		app.statusMu.Lock()
-		app.runningSnapshot = running
+		changed := !sameBoolMap(app.runningSnapshot, status)
+		app.runningSnapshot = status
 		app.statusBusy = false
 		app.statusMu.Unlock()
 
-		procPostMessage.Call(hwnd, WM_STATUS_READY, 0, 0)
+		if changed {
+			procPostMessage.Call(hwnd, WM_STATUS_READY, 0, 0)
+		}
 	}()
+}
+
+func configuredProcessStatus(cfg config.File, runningNames map[string]bool) map[string]bool {
+	status := map[string]bool{}
+	for _, item := range cfg.Programs {
+		name := strings.ToLower(strings.TrimSpace(effectiveProcess(item)))
+		if name == "" {
+			continue
+		}
+		status[name] = runningNames[name]
+	}
+	return status
+}
+
+func sameBoolMap(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func applyStatusSnapshot() {
