@@ -329,6 +329,7 @@ type rowControls struct {
 	path          uintptr
 	browse        uintptr
 	uwp           uintptr
+	uwpLabel      uintptr
 	status        uintptr
 	selectProcess uintptr
 	remove        uintptr
@@ -522,12 +523,12 @@ func wndProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
 		}
 		if msg == WM_CTLCOLORBTN {
 			color = rgb(226, 232, 240)
-			back = rgb(18, 20, 24)
+			back = rgb(30, 34, 40)
 		}
 		procSetTextColor.Call(wparam, uintptr(color))
 		procSetBkColor.Call(wparam, uintptr(back))
 		if msg == WM_CTLCOLORBTN {
-			return app.bgBrush
+			return app.editBrush
 		}
 		return app.editBrush
 	case WM_CLOSE:
@@ -568,7 +569,7 @@ func createToolbar(hwnd uintptr) {
 
 func rebuildRows(hwnd uintptr) {
 	for _, r := range app.rows {
-		for _, h := range []uintptr{r.check, r.path, r.browse, r.uwp, r.status, r.selectProcess, r.remove} {
+		for _, h := range []uintptr{r.check, r.path, r.browse, r.uwp, r.uwpLabel, r.status, r.selectProcess, r.remove} {
 			if h != 0 {
 				procDestroyWindow.Call(h)
 			}
@@ -616,7 +617,8 @@ func layout(hwnd uintptr, erase bool) {
 		}
 		move(r.path, pathX, rowY, pathW, 32)
 		move(r.browse, xBrowse, rowY, browseW, 32)
-		move(r.uwp, xUWP, rowY+5, uwpW, 24)
+		move(r.uwp, xUWP, rowY+9, 18, 18)
+		move(r.uwpLabel, xUWP+22, rowY+6, uwpW-22, 22)
 		move(r.status, xStatus, rowY, statusW, 32)
 		move(r.selectProcess, xSelect, rowY, selectW, 32)
 		move(r.remove, xRemove, rowY, removeW, 32)
@@ -636,7 +638,8 @@ func ensureRowPool(hwnd uintptr, count int) {
 			check:         checkbox(hwnd, 0, 0, 18, 18, id+1),
 			path:          edit(hwnd, "", 0, 0, 260, 30, id+2, false),
 			browse:        button(hwnd, "浏览", 0, 0, 78, 30, id+3),
-			uwp:           checkboxText(hwnd, "UWP", 0, 0, 56, 22, id+7),
+			uwp:           checkbox(hwnd, 0, 0, 18, 18, id+7),
+			uwpLabel:      staticText(hwnd, "UWP", 0, 0, 34, 22, 0),
 			status:        edit(hwnd, "", 0, 0, 158, 30, id+4, true),
 			selectProcess: button(hwnd, "选择进程", 0, 0, 86, 30, id+5),
 			remove:        button(hwnd, "×", 0, 0, 72, 30, id+6),
@@ -969,7 +972,7 @@ func setRowVisible(r *rowControls, visible bool) {
 	if visible {
 		show = SW_SHOW
 	}
-	for _, h := range []uintptr{r.check, r.path, r.browse, r.uwp, r.status, r.selectProcess, r.remove} {
+	for _, h := range []uintptr{r.check, r.path, r.browse, r.uwp, r.uwpLabel, r.status, r.selectProcess, r.remove} {
 		procShowWindow.Call(h, show)
 	}
 	r.visible = visible
