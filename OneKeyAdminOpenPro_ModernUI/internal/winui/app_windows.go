@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"unicode/utf16"
 	"unsafe"
 
 	"program-launch-manager/internal/config"
@@ -91,47 +92,49 @@ const (
 	CBN_DBLCLK       = 2
 	LBN_DBLCLK       = 2
 
-	SIZE_MINIMIZED           = 1
-	COLOR_WINDOW             = 5
-	SB_VERT                  = 1
-	SB_LINEUP                = 0
-	SB_LINEDOWN              = 1
-	SB_PAGEUP                = 2
-	SB_PAGEDOWN              = 3
-	SB_THUMBPOSITION         = 4
-	SB_THUMBTRACK            = 5
-	SB_TOP                   = 6
-	SB_BOTTOM                = 7
-	SIF_RANGE                = 0x0001
-	SIF_PAGE                 = 0x0002
-	SIF_POS                  = 0x0004
-	SIF_ALL                  = SIF_RANGE | SIF_PAGE | SIF_POS
-	WHEEL_DELTA              = 120
-	RDW_INVALIDATE           = 0x0001
-	RDW_ERASE                = 0x0004
-	RDW_ALLCHILDREN          = 0x0080
-	ODS_SELECTED             = 0x0001
-	TRANSPARENT              = 1
-	DT_CENTER                = 0x0001
-	DT_VCENTER               = 0x0004
-	DT_SINGLELINE            = 0x0020
-	IDC_ARROW                = 32512
-	IDI_APPLICATION          = 32512
-	ICON_SMALL               = 0
-	ICON_BIG                 = 1
-	APP_ICON_ID              = 101
-	SM_XVIRTUAL              = 76
-	SM_YVIRTUAL              = 77
-	SM_CXSCREEN              = 0
-	SM_CXVIRTUAL             = 78
-	SM_CYVIRTUAL             = 79
-	MONITOR_DEFAULTTONEAREST = 2
+	SIZE_MINIMIZED             = 1
+	COLOR_WINDOW               = 5
+	SB_VERT                    = 1
+	SB_LINEUP                  = 0
+	SB_LINEDOWN                = 1
+	SB_PAGEUP                  = 2
+	SB_PAGEDOWN                = 3
+	SB_THUMBPOSITION           = 4
+	SB_THUMBTRACK              = 5
+	SB_TOP                     = 6
+	SB_BOTTOM                  = 7
+	SIF_RANGE                  = 0x0001
+	SIF_PAGE                   = 0x0002
+	SIF_POS                    = 0x0004
+	SIF_ALL                    = SIF_RANGE | SIF_PAGE | SIF_POS
+	WHEEL_DELTA                = 120
+	RDW_INVALIDATE             = 0x0001
+	RDW_ERASE                  = 0x0004
+	RDW_ALLCHILDREN            = 0x0080
+	ODS_SELECTED               = 0x0001
+	TRANSPARENT                = 1
+	DT_CENTER                  = 0x0001
+	DT_VCENTER                 = 0x0004
+	DT_SINGLELINE              = 0x0020
+	IDC_ARROW                  = 32512
+	IDI_APPLICATION            = 32512
+	ICON_SMALL                 = 0
+	ICON_BIG                   = 1
+	APP_ICON_ID                = 101
+	SM_XVIRTUAL                = 76
+	SM_YVIRTUAL                = 77
+	SM_CXSCREEN                = 0
+	SM_CXVIRTUAL               = 78
+	SM_CYVIRTUAL               = 79
+	MONITOR_DEFAULTTONEAREST   = 2
+	ERROR_CLASS_ALREADY_EXISTS = 1410
 
-	WM_TRAY_ICON    = WM_APP + 10
-	WM_STATUS_READY = WM_APP + 11
-	WM_SAVE_DONE    = WM_APP + 12
-	ID_TIMER        = 2001
-	TRAY_ID         = 1
+	WM_TRAY_ICON      = WM_APP + 10
+	WM_STATUS_READY   = WM_APP + 11
+	WM_AUTOSAVE_ERR   = WM_APP + 13
+	WM_OPERATION_DONE = WM_APP + 14
+	ID_TIMER          = 2001
+	TRAY_ID           = 1
 
 	DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
 	DWMWA_USE_IMMERSIVE_DARK_MODE     = 20
@@ -150,6 +153,10 @@ const (
 	ID_ALL   = 103
 	ID_NONE  = 104
 	ID_SAVE  = 105
+
+	MB_ABORTRETRYIGNORE = 0x00000002
+	IDRETRY             = 4
+	IDIGNORE            = 5
 
 	rowBase           = 1000
 	rowStep           = 10
@@ -176,6 +183,7 @@ var (
 	procShowWindow        = user32.NewProc("ShowWindow")
 	procUpdateWindow      = user32.NewProc("UpdateWindow")
 	procGetMessage        = user32.NewProc("GetMessageW")
+	procRegisterWindowMsg = user32.NewProc("RegisterWindowMessageW")
 	procTranslateMessage  = user32.NewProc("TranslateMessage")
 	procDispatchMessage   = user32.NewProc("DispatchMessageW")
 	procPostQuitMessage   = user32.NewProc("PostQuitMessage")
@@ -228,8 +236,11 @@ var (
 	procCreateFont       = gdi32.NewProc("CreateFontW")
 	procShellNotifyIcon  = shell32.NewProc("Shell_NotifyIconW")
 	procGetOpenFileName  = comdlg32.NewProc("GetOpenFileNameW")
+	procCommDlgExtError  = comdlg32.NewProc("CommDlgExtendedError")
 	procDwmSetWindowAttr = dwmapi.NewProc("DwmSetWindowAttribute")
 )
+
+var taskbarCreatedMsg uint32
 
 type point struct{ X, Y int32 }
 type rect struct{ Left, Top, Right, Bottom int32 }
@@ -350,21 +361,47 @@ type appState struct {
 	scrollDrag       bool
 	scrollDragOffset int32
 	mu               sync.Mutex
-	saveMu           sync.Mutex
+	saveQueue        chan saveRequest
 
-	statusMu        sync.Mutex
-	statusBusy      bool
-	runningSnapshot map[string]bool
-	updatingUI      bool
-	autoSaveDirty   bool
-	autoSaveBusy    bool
+	statusMu         sync.Mutex
+	statusBusy       bool
+	runningSnapshot  map[string]bool
+	updatingUI       bool
+	autoSaveDirty    bool
+	autoSaveBusy     bool
+	autoSaveErr      string
+	autoSaveErrSeen  bool
+	nextSaveSeq      uint64
+	lastSaveSeq      uint64
+	controlCreateErr error
+	trayAvailable    bool
+	timerActive      bool
+
+	operationMu      sync.Mutex
+	operationResults []operationResult
+}
+
+type operationResult struct {
+	heading  string
+	failures []string
+}
+
+type saveRequest struct {
+	seq  uint64
+	cfg  config.File
+	done chan error
 }
 
 var app *appState
 
 func Run() int {
-	cfg, _ := config.Load()
-	app = &appState{cfg: cfg}
+	cfg, err := config.Load()
+	if err != nil {
+		message(0, "配置加载失败，原文件未被修改。\n\n"+err.Error(), "程序启动管理器")
+		return 1
+	}
+	app = &appState{cfg: cfg, saveQueue: make(chan saveRequest, 8)}
+	go runSaveWorker(app.saveQueue)
 	if app.cfg.Window.W == 0 {
 		app.cfg.Window = config.DefaultWindow()
 	}
@@ -372,6 +409,9 @@ func Run() int {
 }
 
 func runWindow() int {
+	if r, _, _ := procRegisterWindowMsg.Call(uintptr(unsafe.Pointer(utf16Ptr("TaskbarCreated")))); r != 0 {
+		taskbarCreatedMsg = uint32(r)
+	}
 	hinst := getModuleHandle()
 	className := utf16Ptr("ProgramLaunchManagerGo")
 	icon := loadAppIcon(hinst)
@@ -384,7 +424,10 @@ func runWindow() int {
 		IconSm:    icon,
 		ClassName: className,
 	}
-	procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc)))
+	if err := registerWindowClass(&wc); err != nil {
+		message(0, "注册主窗口类失败：\n\n"+err.Error(), "程序启动管理器")
+		return 1
+	}
 
 	win := app.cfg.Window
 	if win.W < 640 {
@@ -400,15 +443,23 @@ func runWindow() int {
 	if !isWindowRectVisible(x, y, win.W, win.H) {
 		x, y = 100, 100
 	}
-	hwnd := createWindow(0, className, utf16Ptr("程序启动管理器"), WS_OVERLAPPEDWINDOW, x, y, win.W, win.H, 0, 0, hinst, 0)
+	hwnd, err := createWindowChecked(0, className, utf16Ptr("程序启动管理器"), WS_OVERLAPPEDWINDOW, x, y, win.W, win.H, 0, 0, hinst, 0)
+	if err != nil {
+		message(0, "创建主窗口失败：\n\n"+err.Error(), "程序启动管理器")
+		return 1
+	}
 	applyDarkTitleBar(hwnd)
 	app.hwnd = hwnd
 	procShowWindow.Call(hwnd, SW_SHOWNORMAL)
 	procUpdateWindow.Call(hwnd)
 	var m msg
 	for {
-		r, _, _ := procGetMessage.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
-		if int32(r) <= 0 {
+		status, err := nextMessage(&m)
+		if err != nil {
+			message(hwnd, "读取窗口消息失败：\n\n"+err.Error(), "程序启动管理器")
+			return 1
+		}
+		if status == 0 {
 			break
 		}
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
@@ -418,6 +469,13 @@ func runWindow() int {
 }
 
 func wndProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
+	if taskbarCreatedMsg != 0 && msg == taskbarCreatedMsg {
+		app.trayAvailable = addTray(hwnd)
+		if !app.trayAvailable {
+			restoreFromTray(hwnd)
+		}
+		return 0
+	}
 	switch msg {
 	case WM_CREATE:
 		app.hwnd = hwnd
@@ -430,15 +488,28 @@ func wndProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
 		procSendMessage.Call(hwnd, WM_SETICON, ICON_SMALL, app.icon)
 		createToolbar(hwnd)
 		rebuildRows(hwnd)
+		if app.controlCreateErr != nil {
+			return ^uintptr(0)
+		}
 		layout(hwnd, true)
-		addTray(hwnd)
-		procSetTimer.Call(hwnd, ID_TIMER, 1000, 0)
+		app.trayAvailable = addTray(hwnd)
+		if !app.trayAvailable {
+			message(hwnd, "系统托盘图标创建失败；窗口将保持普通最小化，不会隐藏到托盘。", "程序启动管理器")
+		}
+		if timer, _, _ := procSetTimer.Call(hwnd, ID_TIMER, 1000, 0); timer != 0 {
+			app.timerActive = true
+		} else {
+			message(hwnd, "创建状态刷新定时器失败；状态不会自动刷新，配置仍会在手动保存或退出时保存。", "程序启动管理器")
+		}
 		requestStatusRefresh()
 		return 0
 	case WM_SIZE:
 		if wparam == SIZE_MINIMIZED {
-			hideToTray(hwnd)
-			return 0
+			if app.trayAvailable {
+				hideToTray(hwnd)
+				return 0
+			}
+			break
 		}
 		layout(hwnd, true)
 		return 0
@@ -483,8 +554,16 @@ func wndProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
 	case WM_STATUS_READY:
 		applyStatusSnapshot()
 		return 0
-	case WM_SAVE_DONE:
-		message(hwnd, "配置已保存。", "程序启动管理器")
+	case WM_AUTOSAVE_ERR:
+		app.mu.Lock()
+		errText := app.autoSaveErr
+		app.mu.Unlock()
+		if errText != "" {
+			message(hwnd, "自动保存失败，将在后续修改后重试。\n\n"+errText, "程序启动管理器")
+		}
+		return 0
+	case WM_OPERATION_DONE:
+		showNextOperationResult(hwnd)
 		return 0
 	case WM_COMMAND:
 		if app != nil && app.updatingUI {
@@ -532,12 +611,17 @@ func wndProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
 		}
 		return app.editBrush
 	case WM_CLOSE:
-		saveFromUI()
+		if !confirmClose(hwnd) {
+			return 0
+		}
+		closeActiveProcessDialog()
 		removeTray(hwnd)
 		procDestroyWindow.Call(hwnd)
 		return 0
 	case WM_DESTROY:
-		procKillTimer.Call(hwnd, ID_TIMER)
+		if app.timerActive {
+			procKillTimer.Call(hwnd, ID_TIMER)
+		}
 		if app.bgBrush != 0 {
 			procDeleteObject.Call(app.bgBrush)
 		}
@@ -984,22 +1068,12 @@ func handleCommand(hwnd uintptr, id uint16, code uint16, lparam uintptr) {
 	case ID_START:
 		syncFromUI()
 		markAutoSaveDirty()
-		for _, item := range cloneConfig(app.cfg).Programs {
-			if item.Enabled {
-				go process.Launch(item.Path, item.IsUWP)
-			}
-		}
+		launchProgramsAsync(hwnd, cloneConfig(app.cfg).Programs)
 		needsRefresh = true
 	case ID_STOP:
 		syncFromUI()
 		markAutoSaveDirty()
-		for _, item := range cloneConfig(app.cfg).Programs {
-			if item.Enabled {
-				if name := effectiveProcess(item); name != "" {
-					go process.CloseByName(name)
-				}
-			}
-		}
+		closeProgramsAsync(hwnd, cloneConfig(app.cfg).Programs)
 		needsRefresh = true
 	case ID_ADD:
 		syncFromUI()
@@ -1019,7 +1093,11 @@ func handleCommand(hwnd uintptr, id uint16, code uint16, lparam uintptr) {
 		markAutoSaveDirty()
 	case ID_SAVE:
 		syncFromUI()
-		saveConfigNotifyAsync(hwnd, cloneConfig(app.cfg))
+		if err := saveConfig(cloneConfig(app.cfg)); err != nil {
+			message(hwnd, "配置保存失败：\n\n"+err.Error(), "程序启动管理器")
+		} else {
+			message(hwnd, "配置已保存。", "程序启动管理器")
+		}
 	default:
 		if id >= rowBase {
 			slot := int((id - rowBase) / rowStep)
@@ -1076,16 +1154,9 @@ func handleCommand(hwnd uintptr, id uint16, code uint16, lparam uintptr) {
 	}
 }
 
-func saveFromUI() {
+func saveFromUI() error {
 	syncFromUI()
-	_ = saveConfig(cloneConfig(app.cfg))
-}
-
-func saveConfigNotifyAsync(hwnd uintptr, cfg config.File) {
-	go func() {
-		_ = saveConfig(cfg)
-		procPostMessage.Call(hwnd, WM_SAVE_DONE, 0, 0)
-	}()
+	return saveConfig(cloneConfig(app.cfg))
 }
 
 func scheduleAutoSave() {
@@ -1111,11 +1182,26 @@ func setAllEnabled(enabled bool) {
 }
 
 func saveConfig(cfg config.File) error {
-	if app != nil {
-		app.saveMu.Lock()
-		defer app.saveMu.Unlock()
+	seq, done := enqueueSave(cfg)
+	err := <-done
+	app.recordSaveResult(seq, err, false)
+	return err
+}
+
+func enqueueSave(cfg config.File) (uint64, <-chan error) {
+	app.mu.Lock()
+	app.nextSaveSeq++
+	seq := app.nextSaveSeq
+	app.mu.Unlock()
+	done := make(chan error, 1)
+	app.saveQueue <- saveRequest{seq: seq, cfg: cfg, done: done}
+	return seq, done
+}
+
+func runSaveWorker(queue <-chan saveRequest) {
+	for req := range queue {
+		req.done <- config.Save(req.cfg)
 	}
-	return config.Save(cfg)
 }
 
 func markAutoSaveDirty() {
@@ -1135,12 +1221,135 @@ func flushAutoSave() {
 	app.autoSaveBusy = true
 	app.mu.Unlock()
 
+	seq, done := enqueueSave(cfg)
+	hwnd := app.hwnd
 	go func() {
-		_ = saveConfig(cfg)
+		err := <-done
+		_, notify := app.recordSaveResult(seq, err, true)
 		app.mu.Lock()
 		app.autoSaveBusy = false
 		app.mu.Unlock()
+		if notify {
+			procPostMessage.Call(hwnd, WM_AUTOSAVE_ERR, 0, 0)
+		}
 	}()
+}
+
+func (a *appState) recordSaveResult(seq uint64, err error, auto bool) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if seq <= a.lastSaveSeq {
+		return a.autoSaveErr, false
+	}
+	a.lastSaveSeq = seq
+	if err == nil {
+		a.autoSaveErr = ""
+		a.autoSaveErrSeen = false
+		return "", false
+	}
+	if !auto {
+		return a.autoSaveErr, false
+	}
+	a.autoSaveErr = err.Error()
+	if a.autoSaveErrSeen {
+		return a.autoSaveErr, false
+	}
+	a.autoSaveErrSeen = true
+	return a.autoSaveErr, true
+}
+
+func launchProgramsAsync(hwnd uintptr, items []config.ProgramItem) {
+	go func() {
+		var failures []string
+		for _, item := range items {
+			if item.Enabled {
+				if err := process.Launch(item.Path, item.IsUWP); err != nil {
+					failures = append(failures, fmt.Sprintf("%s: %v", item.Path, err))
+				}
+			}
+		}
+		if len(failures) == 0 {
+			return
+		}
+		app.queueOperationResult("以下程序启动失败：", failures)
+		procPostMessage.Call(hwnd, WM_OPERATION_DONE, 0, 0)
+	}()
+}
+
+func closeProgramsAsync(hwnd uintptr, items []config.ProgramItem) {
+	names := uniqueEnabledProcessNames(items)
+	go func() {
+		var failures []string
+		for _, name := range names {
+			if err := process.CloseByName(name); err != nil {
+				failures = append(failures, fmt.Sprintf("%s: %v", name, err))
+			}
+		}
+		if len(failures) == 0 {
+			return
+		}
+		app.queueOperationResult("以下程序关闭失败：", failures)
+		procPostMessage.Call(hwnd, WM_OPERATION_DONE, 0, 0)
+	}()
+}
+
+func uniqueEnabledProcessNames(items []config.ProgramItem) []string {
+	seen := make(map[string]bool)
+	var names []string
+	for _, item := range items {
+		if !item.Enabled {
+			continue
+		}
+		name := strings.TrimSpace(effectiveProcess(item))
+		key := strings.ToLower(name)
+		if name != "" && !seen[key] {
+			seen[key] = true
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func showNextOperationResult(hwnd uintptr) {
+	result, ok := app.popOperationResult()
+	if !ok {
+		return
+	}
+	message(hwnd, result.heading+"\n\n"+strings.Join(result.failures, "\n"), "程序启动管理器")
+}
+
+func (a *appState) queueOperationResult(heading string, failures []string) {
+	a.operationMu.Lock()
+	a.operationResults = append(a.operationResults, operationResult{heading: heading, failures: append([]string(nil), failures...)})
+	a.operationMu.Unlock()
+}
+
+func (a *appState) popOperationResult() (operationResult, bool) {
+	a.operationMu.Lock()
+	defer a.operationMu.Unlock()
+	if len(a.operationResults) == 0 {
+		return operationResult{}, false
+	}
+	result := a.operationResults[0]
+	a.operationResults = a.operationResults[1:]
+	return result, true
+}
+
+func confirmClose(hwnd uintptr) bool {
+	for {
+		if err := saveFromUI(); err != nil {
+			choice := messageChoice(hwnd, "配置保存失败。\n\n"+err.Error()+"\n\n重试：再次保存\n中止：返回程序\n忽略：放弃修改并退出", "程序启动管理器", MB_ABORTRETRYIGNORE)
+			switch choice {
+			case IDRETRY:
+				continue
+			case IDIGNORE:
+				return true
+			default:
+				return false
+			}
+		}
+		return true
+	}
 }
 
 func cloneConfig(cfg config.File) config.File {
@@ -1159,12 +1368,9 @@ func syncFromUI() {
 			continue
 		}
 		item := &app.cfg.Programs[r.index]
-		item.Path = getText(r.path)
+		updateProgramPath(item, getText(r.path))
 		item.Enabled = procSendMessageUint(r.check, BM_GETCHECK, 0, 0) == BST_CHECKED
 		item.IsUWP = procSendMessageUint(r.uwp, BM_GETCHECK, 0, 0) == BST_CHECKED || strings.HasPrefix(strings.ToLower(item.Path), "shell:")
-		if item.ProcessName == "" {
-			item.ProcessName = process.ProcessNameForPath(item.Path)
-		}
 	}
 	if isWindowStateSavable(app.hwnd) {
 		var wr rect
@@ -1172,6 +1378,14 @@ func syncFromUI() {
 		if wr.Right > wr.Left && wr.Bottom > wr.Top {
 			app.cfg.Window = config.WindowState{X: wr.Left, Y: wr.Top, W: wr.Right - wr.Left, H: wr.Bottom - wr.Top}
 		}
+	}
+}
+
+func updateProgramPath(item *config.ProgramItem, path string) {
+	changed := !strings.EqualFold(strings.TrimSpace(item.Path), strings.TrimSpace(path))
+	item.Path = path
+	if changed && item.SelectedProcess == "" {
+		item.ProcessName = process.ProcessNameForPath(path)
 	}
 }
 
@@ -1189,10 +1403,15 @@ func requestStatusRefresh() {
 	hwnd := app.hwnd
 	go func() {
 		runningNames := map[string]bool{}
-		if procs, err := process.List(); err == nil {
-			for _, p := range procs {
-				runningNames[strings.ToLower(p.Name)] = true
-			}
+		procs, err := process.List()
+		if err != nil {
+			app.statusMu.Lock()
+			app.statusBusy = false
+			app.statusMu.Unlock()
+			return
+		}
+		for _, p := range procs {
+			runningNames[strings.ToLower(p.Name)] = true
 		}
 		status := configuredProcessStatus(cfg, runningNames)
 
@@ -1273,7 +1492,7 @@ func effectiveProcess(item config.ProgramItem) string {
 
 func chooseFile(hwnd uintptr) string {
 	var buf [4096]uint16
-	filterData := syscall.StringToUTF16("程序 (*.exe;*.lnk)\x00*.exe;*.lnk\x00所有文件 (*.*)\x00*.*\x00\x00")
+	filterData := dialogFilter("程序 (*.exe;*.lnk)", "*.exe;*.lnk", "所有文件 (*.*)", "*.*")
 	filter := &filterData[0]
 	title := utf16Ptr("选择程序")
 	ofn := openFileName{
@@ -1287,13 +1506,25 @@ func chooseFile(hwnd uintptr) string {
 	}
 	r, _, _ := procGetOpenFileName.Call(uintptr(unsafe.Pointer(&ofn)))
 	if r == 0 {
+		code, _, _ := procCommDlgExtError.Call()
+		if code != 0 {
+			message(hwnd, fmt.Sprintf("打开文件选择器失败，错误码：0x%08X", uint32(code)), "程序启动管理器")
+		}
 		return ""
 	}
 	return syscall.UTF16ToString(buf[:])
 }
 
+func dialogFilter(parts ...string) []uint16 {
+	return utf16.Encode([]rune(strings.Join(parts, "\x00") + "\x00\x00"))
+}
+
 func chooseProcess(parent uintptr) string {
-	procs, _ := process.List()
+	procs, err := process.List()
+	if err != nil {
+		message(parent, "枚举进程失败：\n\n"+err.Error(), "程序启动管理器")
+		return ""
+	}
 	d := newProcessDialog(parent, procs)
 	return d.run()
 }
@@ -1325,17 +1556,37 @@ func (d *processDialog) run() string {
 	className := utf16Ptr("ProgramLaunchProcessDialog")
 	icon := loadAppIcon(hinst)
 	wc := wndclassex{Size: uint32(unsafe.Sizeof(wndclassex{})), WndProc: syscall.NewCallback(processDlgProc), Instance: hinst, Cursor: loadCursor(0, IDC_ARROW), Icon: icon, IconSm: icon, ClassName: className}
-	procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc)))
+	if err := registerWindowClass(&wc); err != nil {
+		message(d.parent, "注册进程选择窗口失败：\n\n"+err.Error(), "程序启动管理器")
+		return ""
+	}
 	x, y := centeredDialogPos(d.parent, 620, 680)
-	d.hwnd = createWindow(WS_EX_TOOLWINDOW, className, utf16Ptr("选择进程"), WS_CAPTION|WS_SYSMENU, x, y, 620, 680, d.parent, 0, hinst, 0)
+	app.controlCreateErr = nil
+	var err error
+	d.hwnd, err = createWindowChecked(WS_EX_TOOLWINDOW, className, utf16Ptr("选择进程"), WS_CAPTION|WS_SYSMENU, x, y, 620, 680, d.parent, 0, hinst, 0)
+	if err != nil {
+		message(d.parent, "创建进程选择窗口失败：\n\n"+err.Error(), "程序启动管理器")
+		return ""
+	}
 	applyDarkTitleBar(d.hwnd)
 	procShowWindow.Call(d.hwnd, SW_SHOWNORMAL)
 	procUpdateWindow.Call(d.hwnd)
 	procEnableWindow.Call(d.parent, 0)
 	var m msg
 	for !d.done {
-		r, _, _ := procGetMessage.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
-		if int32(r) <= 0 {
+		status, err := nextMessage(&m)
+		if err != nil {
+			message(d.hwnd, "读取窗口消息失败：\n\n"+err.Error(), "程序启动管理器")
+			d.done = true
+			procDestroyWindow.Call(d.hwnd)
+			break
+		}
+		if status == 0 {
+			d.done = true
+			if d.hwnd != 0 {
+				procDestroyWindow.Call(d.hwnd)
+			}
+			procPostQuitMessage.Call(m.WParam)
 			break
 		}
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
@@ -1371,6 +1622,9 @@ func processDlgProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
 		procSendMessage.Call(dlg.list, LB_SETCURSEL, 0, 0)
 		button(hwnd, "确定", 404, 606, 90, 36, 302)
 		button(hwnd, "取消", 504, 606, 90, 36, 303)
+		if app.controlCreateErr != nil {
+			return ^uintptr(0)
+		}
 		return 0
 	case WM_COMMAND:
 		id := loword(uint32(wparam))
@@ -1401,6 +1655,8 @@ func processDlgProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
 		procDestroyWindow.Call(hwnd)
 		return 0
 	case WM_DESTROY:
+		dlg.done = true
+		dlg.hwnd = 0
 		if dlg.titleFont != 0 {
 			procDeleteObject.Call(dlg.titleFont)
 			dlg.titleFont = 0
@@ -1443,7 +1699,15 @@ func processDlgProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
 	return r
 }
 
-func addTray(hwnd uintptr) {
+func closeActiveProcessDialog() {
+	if dlg == nil || dlg.done || dlg.hwnd == 0 {
+		return
+	}
+	dlg.done = true
+	procDestroyWindow.Call(dlg.hwnd)
+}
+
+func addTray(hwnd uintptr) bool {
 	var data notifyIconData
 	data.CbSize = uint32(unsafe.Sizeof(data))
 	data.HWnd = hwnd
@@ -1452,15 +1716,20 @@ func addTray(hwnd uintptr) {
 	data.UCallbackMessage = WM_TRAY_ICON
 	data.HIcon = app.icon
 	copy(data.SzTip[:], syscall.StringToUTF16("程序启动管理器"))
-	procShellNotifyIcon.Call(NIM_ADD, uintptr(unsafe.Pointer(&data)))
+	r, _, _ := procShellNotifyIcon.Call(NIM_ADD, uintptr(unsafe.Pointer(&data)))
+	return r != 0
 }
 
 func removeTray(hwnd uintptr) {
+	if !app.trayAvailable {
+		return
+	}
 	var data notifyIconData
 	data.CbSize = uint32(unsafe.Sizeof(data))
 	data.HWnd = hwnd
 	data.UID = TRAY_ID
 	procShellNotifyIcon.Call(NIM_DELETE, uintptr(unsafe.Pointer(&data)))
+	app.trayAvailable = false
 }
 
 func hideToTray(hwnd uintptr) { procShowWindow.Call(hwnd, SW_HIDE) }
@@ -1482,9 +1751,7 @@ func showTrayMenu(hwnd uintptr) {
 		restoreFromTray(hwnd)
 	}
 	if cmd == 402 {
-		saveFromUI()
-		removeTray(hwnd)
-		procDestroyWindow.Call(hwnd)
+		procSendMessage.Call(hwnd, WM_CLOSE, 0, 0)
 	}
 }
 
@@ -1518,8 +1785,43 @@ func createChild(exStyle uint32, class, text string, style uint32, x, y, w, h in
 	return createWindow(exStyle, utf16Ptr(class), utf16Ptr(text), style, x, y, w, h, parent, uintptr(id), getModuleHandle(), 0)
 }
 func createWindow(exStyle uint32, class, text *uint16, style uint32, x, y, w, h int32, parent, menu, inst, param uintptr) uintptr {
-	ret, _, _ := procCreateWindowEx.Call(uintptr(exStyle), uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(text)), uintptr(style), uintptr(x), uintptr(y), uintptr(w), uintptr(h), parent, menu, inst, param)
+	ret, err := createWindowChecked(exStyle, class, text, style, x, y, w, h, parent, menu, inst, param)
+	if err != nil && app != nil && app.controlCreateErr == nil {
+		app.controlCreateErr = err
+	}
 	return ret
+}
+
+func createWindowChecked(exStyle uint32, class, text *uint16, style uint32, x, y, w, h int32, parent, menu, inst, param uintptr) (uintptr, error) {
+	ret, _, callErr := procCreateWindowEx.Call(uintptr(exStyle), uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(text)), uintptr(style), uintptr(x), uintptr(y), uintptr(w), uintptr(h), parent, menu, inst, param)
+	if ret == 0 {
+		return 0, winUIError(callErr)
+	}
+	return ret, nil
+}
+
+func registerWindowClass(wc *wndclassex) error {
+	r, _, callErr := procRegisterClassEx.Call(uintptr(unsafe.Pointer(wc)))
+	if r != 0 || callErr == syscall.Errno(ERROR_CLASS_ALREADY_EXISTS) {
+		return nil
+	}
+	return winUIError(callErr)
+}
+
+func nextMessage(m *msg) (int32, error) {
+	r, _, callErr := procGetMessage.Call(uintptr(unsafe.Pointer(m)), 0, 0, 0)
+	status := int32(r)
+	if status == -1 {
+		return -1, winUIError(callErr)
+	}
+	return status, nil
+}
+
+func winUIError(err error) error {
+	if err == nil || err == syscall.Errno(0) {
+		return syscall.EINVAL
+	}
+	return err
 }
 func move(hwnd uintptr, x, y, w, h int32) {
 	procMoveWindow.Call(hwnd, uintptr(x), uintptr(y), uintptr(w), uintptr(h), 0)
@@ -1656,6 +1958,10 @@ func procSendMessageUint(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintp
 }
 func message(hwnd uintptr, text, title string) {
 	procMessageBox.Call(hwnd, uintptr(unsafe.Pointer(utf16Ptr(text))), uintptr(unsafe.Pointer(utf16Ptr(title))), 0)
+}
+func messageChoice(hwnd uintptr, text, title string, flags uintptr) uintptr {
+	r, _, _ := procMessageBox.Call(hwnd, uintptr(unsafe.Pointer(utf16Ptr(text))), uintptr(unsafe.Pointer(utf16Ptr(title))), flags)
+	return r
 }
 func utf16Ptr(s string) *uint16 { p, _ := syscall.UTF16PtrFromString(s); return p }
 func getModuleHandle() uintptr  { r, _, _ := procGetModuleHandle.Call(0); return r }

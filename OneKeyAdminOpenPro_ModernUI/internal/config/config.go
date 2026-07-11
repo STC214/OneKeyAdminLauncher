@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+
+	"golang.org/x/sys/windows"
 )
 
 type ProgramItem struct {
@@ -57,21 +60,38 @@ func Load() (File, error) {
 	if err != nil {
 		return DefaultFile(), err
 	}
-	legacy, _ := LegacyConfigPath()
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	legacy, legacyErr := LegacyConfigPath()
+	if legacyErr != nil {
+		return DefaultFile(), legacyErr
+	}
+	return loadFromPaths(path, legacy)
+}
+
+func loadFromPaths(path, legacy string) (File, error) {
+	if _, err := os.Stat(path); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return DefaultFile(), fmt.Errorf("检查配置 %s: %w", path, err)
+		}
 		if _, legacyErr := os.Stat(legacy); legacyErr == nil {
 			cfg, err := readAny(legacy)
 			if err != nil {
 				return cfg, err
 			}
-			if saveErr := Save(cfg); saveErr == nil {
-				_ = os.Remove(legacy)
+			if saveErr := saveToPath(path, cfg); saveErr != nil {
+				return cfg, fmt.Errorf("迁移配置到 %s: %w", path, saveErr)
 			}
+			_ = os.Remove(legacy)
 			return cfg, nil
+		} else if !errors.Is(legacyErr, os.ErrNotExist) {
+			return DefaultFile(), fmt.Errorf("检查旧配置 %s: %w", legacy, legacyErr)
 		}
 		return DefaultFile(), nil
 	}
-	return readAny(path)
+	cfg, err := readAny(path)
+	if err != nil {
+		return DefaultFile(), fmt.Errorf("读取配置 %s: %w", path, err)
+	}
+	return cfg, nil
 }
 
 func Save(cfg File) error {
@@ -82,11 +102,48 @@ func Save(cfg File) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
+	return saveToPath(path, cfg)
+}
+
+func saveToPath(path string, cfg File) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return writeAtomic(path, data)
+}
+
+func writeAtomic(path string, data []byte) (err error) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".launcher_config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}()
+	if err = tmp.Chmod(0644); err != nil {
+		return err
+	}
+	if _, err = tmp.Write(data); err != nil {
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	from, err := windows.UTF16PtrFromString(tmpPath)
+	if err != nil {
+		return err
+	}
+	to, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
 }
 
 func readAny(path string) (File, error) {

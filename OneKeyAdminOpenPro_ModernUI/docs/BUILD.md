@@ -12,8 +12,7 @@ F:\Project\04_Desktop_Dev_Utilities\OneKeyAdminOpenPro
 
 ```text
 OneKeyAdminOpenPro/
-  ICO.png
-  ICO.ico
+  ../ICO.ico
   cmd/program-launch-manager/
     main.go
     app.rc
@@ -61,11 +60,11 @@ cd F:\Project\04_Desktop_Dev_Utilities\OneKeyAdminOpenPro
 构建脚本会：
 
 - 运行 `go test ./...`。
-- 使用 Python + Pillow 将根目录 `ICO.png` 转为多尺寸 `ICO.ico`。
+- 使用上级主项目中已提交的 `ICO.ico`；如果主项目根目录存在更新的 `ICO.png`，则使用 Python + Pillow 重新生成图标。
 - 使用 `windres --codepage=65001` 将 `app.rc` 编译为 `app.syso`。
 - 构建 `dist/程序启动管理器.exe`。
 
-如果 `ICO.ico` 已存在且比 `ICO.png` 更新，则直接复用。
+如果共享 `ICO.ico` 已存在且比可选的 `ICO.png` 更新，则直接复用。
 
 ## 验证项
 

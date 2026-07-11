@@ -10,6 +10,7 @@
 *.webp
 *.bmp
 *.gif
+!/ICO.ico
 
 # Runtime configuration/state
 /launcher_config.json

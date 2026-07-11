@@ -6,8 +6,9 @@ $distDir = Join-Path $root "dist"
 $outputName = (-join @([char]0x7A0B, [char]0x5E8F, [char]0x542F, [char]0x52A8, [char]0x7BA1, [char]0x7406, [char]0x5668)) + ".exe"
 $outExe = Join-Path $distDir $outputName
 $syso = Join-Path $cmdDir "app.syso"
-$pngIcon = Join-Path $root "ICO.png"
-$icoIcon = Join-Path $root "ICO.ico"
+$sharedRoot = Split-Path -Parent $root
+$pngIcon = Join-Path $sharedRoot "ICO.png"
+$icoIcon = Join-Path $sharedRoot "ICO.ico"
 
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 

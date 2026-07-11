@@ -1,6 +1,8 @@
 package process
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,11 +25,16 @@ var (
 	procShellExecuteExW  = shell32.NewProc("ShellExecuteExW")
 	procOpenProcess      = kernel32.NewProc("OpenProcess")
 	procTerminateProcess = kernel32.NewProc("TerminateProcess")
+	procWaitForSingleObj = kernel32.NewProc("WaitForSingleObject")
 )
 
 const (
 	SEE_MASK_FLAG_NO_UI = 0x00000400
 	PROCESS_TERMINATE   = 0x0001
+	SYNCHRONIZE         = 0x00100000
+	WAIT_OBJECT_0       = 0x00000000
+	WAIT_TIMEOUT        = 0x00000102
+	WAIT_FAILED         = 0xFFFFFFFF
 )
 
 type Info struct {
@@ -61,12 +68,22 @@ func EnsureAdmin() bool {
 	if err != nil {
 		return false
 	}
-	verb, _ := syscall.UTF16PtrFromString("runas")
-	file, _ := syscall.UTF16PtrFromString(exe)
-	cwd, _ := os.Getwd()
-	dir, _ := syscall.UTF16PtrFromString(cwd)
-	r, _, _ := procShellExecuteW.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)), 0, uintptr(unsafe.Pointer(dir)), win.SW_SHOWNORMAL)
-	return r > 32
+	verb, err := syscall.UTF16PtrFromString("runas")
+	if err != nil {
+		return false
+	}
+	file, err := syscall.UTF16PtrFromString(exe)
+	if err != nil {
+		return false
+	}
+	dir, err := syscall.UTF16PtrFromString(filepath.Dir(exe))
+	if err != nil {
+		return false
+	}
+	procShellExecuteW.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)), 0, uintptr(unsafe.Pointer(dir)), win.SW_SHOWNORMAL)
+	// Whether elevation starts successfully or the user cancels UAC, this
+	// non-elevated process must exit. Only the elevated child may continue.
+	return false
 }
 
 func isAdmin() bool {
@@ -95,7 +112,7 @@ func ProcessNameForPath(path string) string {
 func Launch(path string, isUWP bool) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return nil
+		return errors.New("程序路径为空")
 	}
 	if isUWP {
 		target := path
@@ -109,10 +126,16 @@ func Launch(path string, isUWP bool) error {
 }
 
 func shellExecute(target, dir string) error {
-	file, _ := syscall.UTF16PtrFromString(target)
+	file, err := syscall.UTF16PtrFromString(target)
+	if err != nil {
+		return err
+	}
 	var dirPtr *uint16
 	if dir != "" && dir != "." {
-		dirPtr, _ = syscall.UTF16PtrFromString(dir)
+		dirPtr, err = syscall.UTF16PtrFromString(dir)
+		if err != nil {
+			return err
+		}
 	}
 	verb := utf16Ptr("open")
 	info := shellExecuteInfo{
@@ -179,37 +202,85 @@ func IsRunning(name string) bool {
 	return false
 }
 
-func CloseByName(name string) {
+func CloseByName(name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return
+		return nil
 	}
-	pids := pidsByName(name)
+	pids, err := pidsByName(name)
+	if err != nil {
+		return fmt.Errorf("枚举进程 %s: %w", name, err)
+	}
 	if len(pids) == 0 {
-		return
+		return nil
 	}
+	var closeErrs []error
 	for _, pid := range pids {
-		postClose(pid)
+		if err := postClose(pid); err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("PID %d 发送关闭消息: %w", pid, err))
+		}
 	}
 	deadline := time.Now().Add(2500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if len(pidsByName(name)) == 0 {
-			return
+		alive, err := targetsStillRunning(pids, name)
+		if err != nil {
+			return errors.Join(append(closeErrs, fmt.Errorf("确认进程状态: %w", err))...)
+		}
+		if len(alive) == 0 {
+			return errors.Join(closeErrs...)
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
-	for _, pid := range pidsByName(name) {
-		terminate(pid)
+	for _, pid := range pids {
+		if pidMatchesName(pid, name) {
+			if err := terminate(pid); err != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("PID %d 强制结束: %w", pid, err))
+			}
+		}
 	}
+	alive, err := targetsStillRunning(pids, name)
+	if err != nil {
+		closeErrs = append(closeErrs, fmt.Errorf("确认强制结束结果: %w", err))
+	} else if len(alive) != 0 {
+		closeErrs = append(closeErrs, fmt.Errorf("进程仍在运行，PID: %v", alive))
+	}
+	return errors.Join(closeErrs...)
 }
 
-func terminate(pid uint32) {
-	h, _, _ := procOpenProcess.Call(PROCESS_TERMINATE, 0, uintptr(pid))
+func pidMatchesName(pid uint32, name string) bool {
+	entries, err := processEntries()
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.PID == pid {
+			return strings.EqualFold(entry.Name, name)
+		}
+	}
+	return false
+}
+
+func terminate(pid uint32) error {
+	h, _, callErr := procOpenProcess.Call(PROCESS_TERMINATE|SYNCHRONIZE, 0, uintptr(pid))
 	if h == 0 {
-		return
+		return winCallError(callErr)
 	}
 	defer windows.CloseHandle(windows.Handle(h))
-	procTerminateProcess.Call(h, 1)
+	r, _, callErr := procTerminateProcess.Call(h, 1)
+	if r == 0 {
+		return winCallError(callErr)
+	}
+	wait, _, callErr := procWaitForSingleObj.Call(h, 2000)
+	switch uint32(wait) {
+	case WAIT_OBJECT_0:
+		return nil
+	case WAIT_TIMEOUT:
+		return errors.New("等待进程结束超时")
+	case WAIT_FAILED:
+		return winCallError(callErr)
+	default:
+		return fmt.Errorf("等待进程结束返回未知状态 0x%08X", uint32(wait))
+	}
 }
 
 func utf16Ptr(s string) *uint16 {
@@ -217,10 +288,10 @@ func utf16Ptr(s string) *uint16 {
 	return p
 }
 
-func pidsByName(name string) []uint32 {
+func pidsByName(name string) ([]uint32, error) {
 	entries, err := processEntries()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	name = strings.ToLower(name)
 	var pids []uint32
@@ -229,7 +300,25 @@ func pidsByName(name string) []uint32 {
 			pids = append(pids, entry.PID)
 		}
 	}
-	return pids
+	return pids, nil
+}
+
+func targetsStillRunning(pids []uint32, name string) ([]uint32, error) {
+	entries, err := processEntries()
+	if err != nil {
+		return nil, err
+	}
+	targets := make(map[uint32]struct{}, len(pids))
+	for _, pid := range pids {
+		targets[pid] = struct{}{}
+	}
+	var alive []uint32
+	for _, entry := range entries {
+		if _, ok := targets[entry.PID]; ok && strings.EqualFold(entry.Name, name) {
+			alive = append(alive, entry.PID)
+		}
+	}
+	return alive, nil
 }
 
 func processEntries() ([]Info, error) {
@@ -257,7 +346,7 @@ func processEntries() ([]Info, error) {
 	return out, nil
 }
 
-func postClose(pid uint32) {
+func postClose(pid uint32) error {
 	cb := syscall.NewCallback(func(hwnd win.HWND, lparam uintptr) uintptr {
 		var windowPID uint32
 		win.GetWindowThreadProcessId(hwnd, &windowPID)
@@ -266,5 +355,16 @@ func postClose(pid uint32) {
 		}
 		return 1
 	})
-	procEnumWindows.Call(cb, 0)
+	r, _, callErr := procEnumWindows.Call(cb, 0)
+	if r == 0 {
+		return winCallError(callErr)
+	}
+	return nil
+}
+
+func winCallError(err error) error {
+	if err == nil || err == syscall.Errno(0) {
+		return syscall.EINVAL
+	}
+	return err
 }
