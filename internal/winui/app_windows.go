@@ -15,6 +15,8 @@ import (
 )
 
 const (
+	appName = "程序启动管理器"
+
 	WS_OVERLAPPEDWINDOW = 0x00CF0000
 	WS_VISIBLE          = 0x10000000
 	WS_CHILD            = 0x40000000
@@ -145,6 +147,11 @@ const (
 	rowHeight        = 64
 	rowBottomPadding = 16
 )
+
+// appVersion is replaced by the build script through -ldflags -X.
+var appVersion = "dev"
+
+func appWindowTitle() string { return appName + " " + appVersion }
 
 var (
 	user32   = syscall.NewLazyDLL("user32.dll")
@@ -388,7 +395,7 @@ func runWindow() int {
 	if !isWindowRectVisible(x, y, win.W, win.H) {
 		x, y = 100, 100
 	}
-	hwnd, err := createWindowChecked(0, className, utf16Ptr("程序启动管理器"), WS_OVERLAPPEDWINDOW|WS_VISIBLE|WS_VSCROLL, x, y, win.W, win.H, 0, 0, hinst, 0)
+	hwnd, err := createWindowChecked(0, className, utf16Ptr(appWindowTitle()), WS_OVERLAPPEDWINDOW|WS_VISIBLE|WS_VSCROLL, x, y, win.W, win.H, 0, 0, hinst, 0)
 	if err != nil {
 		message(0, "创建主窗口失败：\n\n"+err.Error(), "程序启动管理器")
 		return 1
@@ -1064,10 +1071,8 @@ func closeProgramsAsync(hwnd uintptr, items []config.ProgramItem) {
 	names := uniqueEnabledProcessNames(items)
 	go func() {
 		var failures []string
-		for _, name := range names {
-			if err := process.CloseByName(name); err != nil {
-				failures = append(failures, fmt.Sprintf("%s: %v", name, err))
-			}
+		if err := process.CloseByNames(names); err != nil {
+			failures = append(failures, err.Error())
 		}
 		if len(failures) == 0 {
 			return
@@ -1460,7 +1465,7 @@ func addTray(hwnd uintptr) bool {
 	data.UFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
 	data.UCallbackMessage = WM_TRAY_ICON
 	data.HIcon = app.icon
-	copy(data.SzTip[:], syscall.StringToUTF16("程序启动管理器"))
+	copy(data.SzTip[:], syscall.StringToUTF16(appWindowTitle()))
 	r, _, _ := procShellNotifyIcon.Call(NIM_ADD, uintptr(unsafe.Pointer(&data)))
 	return r != 0
 }

@@ -20,6 +20,15 @@ func TestDialogFilter(t *testing.T) {
 	}
 }
 
+func TestAppWindowTitleIncludesBuildVersion(t *testing.T) {
+	previous := appVersion
+	t.Cleanup(func() { appVersion = previous })
+	appVersion = "20260711_1430"
+	if got, want := appWindowTitle(), "程序启动管理器 20260711_1430"; got != want {
+		t.Fatalf("appWindowTitle() = %q, want %q", got, want)
+	}
+}
+
 func TestSaveResultIgnoresStaleAutoFailure(t *testing.T) {
 	state := &appState{}
 	if _, notify := state.recordSaveResult(2, nil, false); notify {

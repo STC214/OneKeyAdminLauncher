@@ -17,12 +17,14 @@ BEGIN
     BLOCK "080404b0"
     BEGIN
       VALUE "CompanyName", "STC214"
-      VALUE "FileDescription", "程序启动管理器"
+      VALUE "FileDescription", "程序启动管理器 Modern UI（OneKeyAdminOpenPro）"
       VALUE "FileVersion", "1.0.0.0"
-      VALUE "InternalName", "程序启动管理器"
+      VALUE "InternalName", "OneKeyAdminOpenPro_ModernUI"
+      VALUE "LegalCopyright", "Copyright (C) 2026 STC214"
       VALUE "OriginalFilename", "程序启动管理器.exe"
-      VALUE "ProductName", "程序启动管理器"
+      VALUE "ProductName", "OneKeyAdminOpenPro 程序启动管理器 Modern UI"
       VALUE "ProductVersion", "1.0.0.0"
+      VALUE "Comments", "一键以管理员权限启动、检测和关闭常用程序的 Modern UI 版本"
     END
   END
   BLOCK "VarFileInfo"

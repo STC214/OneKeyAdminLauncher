@@ -2,6 +2,7 @@ package process
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -26,7 +27,14 @@ func TestCloseByNameIgnoresEmptyAndMissingProcess(t *testing.T) {
 	}
 }
 
-func TestTargetsStillRunningFindsCurrentProcess(t *testing.T) {
+func TestCloseByNamesIgnoresEmptyDuplicateAndMissingProcesses(t *testing.T) {
+	err := CloseByNames([]string{"", "  ", "__one_key_admin_open_missing_process__.exe", "__ONE_KEY_ADMIN_OPEN_MISSING_PROCESS__.EXE"})
+	if err != nil {
+		t.Fatalf("CloseByNames(missing) = %v", err)
+	}
+}
+
+func TestCloseTargetsStillRunningFindsCurrentProcessAndRejectsPIDNameMismatch(t *testing.T) {
 	pid := uint32(os.Getpid())
 	entries, err := processEntries()
 	if err != nil {
@@ -42,11 +50,12 @@ func TestTargetsStillRunningFindsCurrentProcess(t *testing.T) {
 	if name == "" {
 		t.Fatal("current process was not enumerated")
 	}
-	alive, err := targetsStillRunning([]uint32{pid}, name)
+	targets := []closeTarget{{pid: pid, name: strings.ToUpper(name)}, {pid: pid, name: "not-the-current-process.exe"}}
+	alive, err := closeTargetsStillRunning(targets)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(alive) != 1 || alive[0] != pid {
-		t.Fatalf("targetsStillRunning() = %v, want [%d]", alive, pid)
+	if len(alive) != 1 || alive[0].pid != pid || !strings.EqualFold(alive[0].name, name) {
+		t.Fatalf("closeTargetsStillRunning() = %v, want only PID %d named %s", alive, pid, name)
 	}
 }

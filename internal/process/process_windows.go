@@ -25,16 +25,11 @@ var (
 	procShellExecuteExW  = shell32.NewProc("ShellExecuteExW")
 	procOpenProcess      = kernel32.NewProc("OpenProcess")
 	procTerminateProcess = kernel32.NewProc("TerminateProcess")
-	procWaitForSingleObj = kernel32.NewProc("WaitForSingleObject")
 )
 
 const (
 	SEE_MASK_FLAG_NO_UI = 0x00000400
 	PROCESS_TERMINATE   = 0x0001
-	SYNCHRONIZE         = 0x00100000
-	WAIT_OBJECT_0       = 0x00000000
-	WAIT_TIMEOUT        = 0x00000102
-	WAIT_FAILED         = 0xFFFFFFFF
 )
 
 type Info struct {
@@ -203,26 +198,55 @@ func IsRunning(name string) bool {
 }
 
 func CloseByName(name string) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
+	return CloseByNames([]string{name})
+}
+
+type closeTarget struct {
+	pid  uint32
+	name string
+}
+
+// CloseByNames closes all matching processes as one batch. Every process gets
+// WM_CLOSE before the shared graceful-close timeout starts, so one slow process
+// cannot delay sending WM_CLOSE to the next one.
+func CloseByNames(names []string) error {
+	wanted := make(map[string]string, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			key := strings.ToLower(name)
+			if _, exists := wanted[key]; !exists {
+				wanted[key] = name
+			}
+		}
+	}
+	if len(wanted) == 0 {
 		return nil
 	}
-	pids, err := pidsByName(name)
+
+	entries, err := processEntries()
 	if err != nil {
-		return fmt.Errorf("枚举进程 %s: %w", name, err)
+		return fmt.Errorf("枚举待关闭进程: %w", err)
 	}
-	if len(pids) == 0 {
+	var targets []closeTarget
+	for _, entry := range entries {
+		if name, ok := wanted[strings.ToLower(entry.Name)]; ok {
+			targets = append(targets, closeTarget{pid: entry.PID, name: name})
+		}
+	}
+	if len(targets) == 0 {
 		return nil
 	}
+
 	var closeErrs []error
-	for _, pid := range pids {
-		if err := postClose(pid); err != nil {
-			closeErrs = append(closeErrs, fmt.Errorf("PID %d 发送关闭消息: %w", pid, err))
+	for _, target := range targets {
+		if err := postClose(target.pid); err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("%s (PID %d) 发送关闭消息: %w", target.name, target.pid, err))
 		}
 	}
 	deadline := time.Now().Add(2500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		alive, err := targetsStillRunning(pids, name)
+		alive, err := closeTargetsStillRunning(targets)
 		if err != nil {
 			return errors.Join(append(closeErrs, fmt.Errorf("确认进程状态: %w", err))...)
 		}
@@ -231,37 +255,58 @@ func CloseByName(name string) error {
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
-	for _, pid := range pids {
-		if pidMatchesName(pid, name) {
-			if err := terminate(pid); err != nil {
-				closeErrs = append(closeErrs, fmt.Errorf("PID %d 强制结束: %w", pid, err))
-			}
+
+	alive, err := closeTargetsStillRunning(targets)
+	if err != nil {
+		return errors.Join(append(closeErrs, fmt.Errorf("确认强制结束目标: %w", err))...)
+	}
+	for _, target := range alive {
+		if err := terminate(target.pid); err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("%s (PID %d) 强制结束: %w", target.name, target.pid, err))
 		}
 	}
-	alive, err := targetsStillRunning(pids, name)
-	if err != nil {
-		closeErrs = append(closeErrs, fmt.Errorf("确认强制结束结果: %w", err))
-	} else if len(alive) != 0 {
-		closeErrs = append(closeErrs, fmt.Errorf("进程仍在运行，PID: %v", alive))
+	forceDeadline := time.Now().Add(2000 * time.Millisecond)
+	for time.Now().Before(forceDeadline) {
+		alive, err = closeTargetsStillRunning(alive)
+		if err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("确认强制结束结果: %w", err))
+			return errors.Join(closeErrs...)
+		}
+		if len(alive) == 0 {
+			return errors.Join(closeErrs...)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(alive) != 0 {
+		var remaining []string
+		for _, target := range alive {
+			remaining = append(remaining, fmt.Sprintf("%s (PID %d)", target.name, target.pid))
+		}
+		closeErrs = append(closeErrs, fmt.Errorf("进程仍在运行: %s", strings.Join(remaining, ", ")))
 	}
 	return errors.Join(closeErrs...)
 }
 
-func pidMatchesName(pid uint32, name string) bool {
+func closeTargetsStillRunning(targets []closeTarget) ([]closeTarget, error) {
 	entries, err := processEntries()
 	if err != nil {
-		return false
+		return nil, err
 	}
+	running := make(map[uint32]string, len(entries))
 	for _, entry := range entries {
-		if entry.PID == pid {
-			return strings.EqualFold(entry.Name, name)
+		running[entry.PID] = entry.Name
+	}
+	var alive []closeTarget
+	for _, target := range targets {
+		if strings.EqualFold(running[target.pid], target.name) {
+			alive = append(alive, target)
 		}
 	}
-	return false
+	return alive, nil
 }
 
 func terminate(pid uint32) error {
-	h, _, callErr := procOpenProcess.Call(PROCESS_TERMINATE|SYNCHRONIZE, 0, uintptr(pid))
+	h, _, callErr := procOpenProcess.Call(PROCESS_TERMINATE, 0, uintptr(pid))
 	if h == 0 {
 		return winCallError(callErr)
 	}
@@ -270,55 +315,12 @@ func terminate(pid uint32) error {
 	if r == 0 {
 		return winCallError(callErr)
 	}
-	wait, _, callErr := procWaitForSingleObj.Call(h, 2000)
-	switch uint32(wait) {
-	case WAIT_OBJECT_0:
-		return nil
-	case WAIT_TIMEOUT:
-		return errors.New("等待进程结束超时")
-	case WAIT_FAILED:
-		return winCallError(callErr)
-	default:
-		return fmt.Errorf("等待进程结束返回未知状态 0x%08X", uint32(wait))
-	}
+	return nil
 }
 
 func utf16Ptr(s string) *uint16 {
 	p, _ := syscall.UTF16PtrFromString(s)
 	return p
-}
-
-func pidsByName(name string) ([]uint32, error) {
-	entries, err := processEntries()
-	if err != nil {
-		return nil, err
-	}
-	name = strings.ToLower(name)
-	var pids []uint32
-	for _, entry := range entries {
-		if strings.ToLower(entry.Name) == name {
-			pids = append(pids, entry.PID)
-		}
-	}
-	return pids, nil
-}
-
-func targetsStillRunning(pids []uint32, name string) ([]uint32, error) {
-	entries, err := processEntries()
-	if err != nil {
-		return nil, err
-	}
-	targets := make(map[uint32]struct{}, len(pids))
-	for _, pid := range pids {
-		targets[pid] = struct{}{}
-	}
-	var alive []uint32
-	for _, entry := range entries {
-		if _, ok := targets[entry.PID]; ok && strings.EqualFold(entry.Name, name) {
-			alive = append(alive, entry.PID)
-		}
-	}
-	return alive, nil
 }
 
 func processEntries() ([]Info, error) {
