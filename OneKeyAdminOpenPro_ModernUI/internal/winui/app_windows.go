@@ -386,6 +386,8 @@ type appState struct {
 
 	operationMu      sync.Mutex
 	operationResults []operationResult
+	launchBatches    int
+	launchFailures   []string
 }
 
 type operationResult struct {
@@ -1266,21 +1268,63 @@ func (a *appState) recordSaveResult(seq uint64, err error, auto bool) (string, b
 }
 
 func launchProgramsAsync(hwnd uintptr, items []config.ProgramItem) {
+	app.beginLaunchBatch()
 	go func() {
-		var failures []string
-		for _, item := range items {
-			if item.Enabled {
-				if err := process.Launch(item.Path, item.IsUWP); err != nil {
-					failures = append(failures, fmt.Sprintf("%s: %v", item.Path, err))
-				}
-			}
-		}
-		if len(failures) == 0 {
+		failures := launchEnabledPrograms(items, process.Launch)
+		failures, completed := app.finishLaunchBatch(failures)
+		if !completed || len(failures) == 0 {
 			return
 		}
 		app.queueOperationResult("以下程序启动失败：", failures)
 		procPostMessage.Call(hwnd, WM_OPERATION_DONE, 0, 0)
 	}()
+}
+
+const maxConcurrentLaunches = 6
+
+var launchSlots = make(chan struct{}, maxConcurrentLaunches)
+
+func launchEnabledPrograms(items []config.ProgramItem, launch func(string, bool) error) []string {
+	var enabled []config.ProgramItem
+	for _, item := range items {
+		if item.Enabled {
+			enabled = append(enabled, item)
+		}
+	}
+	if len(enabled) == 0 {
+		return nil
+	}
+
+	errs := make([]error, len(enabled))
+	jobs := make(chan int)
+	workerCount := min(maxConcurrentLaunches, len(enabled))
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				func() {
+					launchSlots <- struct{}{}
+					defer func() { <-launchSlots }()
+					errs[i] = launch(enabled[i].Path, enabled[i].IsUWP)
+				}()
+			}
+		}()
+	}
+	for i := range enabled {
+		jobs <- i
+	}
+	close(jobs)
+	workers.Wait()
+
+	var failures []string
+	for i, err := range errs {
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", enabled[i].Path, err))
+		}
+	}
+	return failures
 }
 
 func closeProgramsAsync(hwnd uintptr, items []config.ProgramItem) {
@@ -1327,6 +1371,25 @@ func (a *appState) queueOperationResult(heading string, failures []string) {
 	a.operationMu.Lock()
 	a.operationResults = append(a.operationResults, operationResult{heading: heading, failures: append([]string(nil), failures...)})
 	a.operationMu.Unlock()
+}
+
+func (a *appState) beginLaunchBatch() {
+	a.operationMu.Lock()
+	a.launchBatches++
+	a.operationMu.Unlock()
+}
+
+func (a *appState) finishLaunchBatch(failures []string) ([]string, bool) {
+	a.operationMu.Lock()
+	defer a.operationMu.Unlock()
+	a.launchFailures = append(a.launchFailures, failures...)
+	a.launchBatches--
+	if a.launchBatches > 0 {
+		return nil, false
+	}
+	all := append([]string(nil), a.launchFailures...)
+	a.launchFailures = nil
+	return all, true
 }
 
 func (a *appState) popOperationResult() (operationResult, bool) {

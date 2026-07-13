@@ -2,6 +2,7 @@ package process
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,16 @@ func TestLaunchRejectsEmbeddedNUL(t *testing.T) {
 func TestLaunchRejectsEmptyPath(t *testing.T) {
 	if err := Launch("   ", false); err == nil {
 		t.Fatal("Launch() should reject an empty path")
+	}
+}
+
+func TestLaunchRejectsMissingFileAndDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.exe")
+	if err := Launch(missing, false); err == nil || !strings.Contains(err.Error(), "程序文件不存在") {
+		t.Fatalf("Launch(missing) = %v", err)
+	}
+	if err := Launch(t.TempDir(), false); err == nil || !strings.Contains(err.Error(), "程序路径是目录") {
+		t.Fatalf("Launch(directory) = %v", err)
 	}
 }
 

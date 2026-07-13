@@ -2,8 +2,12 @@ package winui
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf16"
 
 	"program-launch-manager/internal/config"
@@ -85,6 +89,23 @@ func TestOperationResultsRemainFIFO(t *testing.T) {
 	}
 }
 
+func TestOverlappingLaunchBatchesReturnOneCombinedFailureSet(t *testing.T) {
+	state := &appState{}
+	state.beginLaunchBatch()
+	state.beginLaunchBatch()
+	if failures, completed := state.finishLaunchBatch([]string{"first.exe: failed"}); completed || failures != nil {
+		t.Fatalf("first completion = (%v, %v), want (nil, false)", failures, completed)
+	}
+	failures, completed := state.finishLaunchBatch([]string{"second.exe: failed", "third.exe: failed"})
+	want := []string{"first.exe: failed", "second.exe: failed", "third.exe: failed"}
+	if !completed || !reflect.DeepEqual(failures, want) {
+		t.Fatalf("combined completion = (%v, %v), want (%v, true)", failures, completed, want)
+	}
+	if state.launchBatches != 0 || len(state.launchFailures) != 0 {
+		t.Fatalf("launch aggregate not reset: batches=%d failures=%v", state.launchBatches, state.launchFailures)
+	}
+}
+
 func TestUniqueEnabledProcessNames(t *testing.T) {
 	items := []config.ProgramItem{
 		{Enabled: true, ProcessName: "Tool.exe"},
@@ -95,6 +116,78 @@ func TestUniqueEnabledProcessNames(t *testing.T) {
 	want := []string{"Tool.exe", "other.exe"}
 	if got := uniqueEnabledProcessNames(items); !reflect.DeepEqual(got, want) {
 		t.Fatalf("uniqueEnabledProcessNames() = %v, want %v", got, want)
+	}
+}
+
+func TestLaunchEnabledProgramsLimitsConcurrencyAndPreservesFailureOrder(t *testing.T) {
+	items := make([]config.ProgramItem, 13)
+	for i := range 12 {
+		items[i] = config.ProgramItem{Enabled: true, Path: fmt.Sprintf("tool-%02d.exe", i)}
+	}
+	items[12] = config.ProgramItem{Enabled: false, Path: "disabled.exe"}
+
+	var active atomic.Int32
+	var maximum atomic.Int32
+	var calls atomic.Int32
+	failures := launchEnabledPrograms(items, func(path string, _ bool) error {
+		calls.Add(1)
+		current := active.Add(1)
+		for current > maximum.Load() && !maximum.CompareAndSwap(maximum.Load(), current) {
+		}
+		time.Sleep(20 * time.Millisecond)
+		active.Add(-1)
+		if path == "tool-02.exe" || path == "tool-09.exe" {
+			return errors.New("launch failed")
+		}
+		return nil
+	})
+
+	if calls.Load() != 12 {
+		t.Fatalf("launch calls = %d, want 12", calls.Load())
+	}
+	if maximum.Load() != maxConcurrentLaunches {
+		t.Fatalf("maximum concurrency = %d, want %d", maximum.Load(), maxConcurrentLaunches)
+	}
+	want := []string{"tool-02.exe: launch failed", "tool-09.exe: launch failed"}
+	if !reflect.DeepEqual(failures, want) {
+		t.Fatalf("failures = %v, want %v", failures, want)
+	}
+}
+
+func TestLaunchEnabledProgramsLimitsConcurrencyAcrossOverlappingBatches(t *testing.T) {
+	items := make([]config.ProgramItem, 8)
+	for i := range items {
+		items[i] = config.ProgramItem{Enabled: true, Path: fmt.Sprintf("batch-tool-%02d.exe", i)}
+	}
+
+	var active atomic.Int32
+	var maximum atomic.Int32
+	launch := func(string, bool) error {
+		current := active.Add(1)
+		for {
+			previous := maximum.Load()
+			if current <= previous || maximum.CompareAndSwap(previous, current) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		active.Add(-1)
+		return nil
+	}
+
+	var batches sync.WaitGroup
+	batches.Add(2)
+	for range 2 {
+		go func() {
+			defer batches.Done()
+			if failures := launchEnabledPrograms(items, launch); len(failures) != 0 {
+				t.Errorf("unexpected failures: %v", failures)
+			}
+		}()
+	}
+	batches.Wait()
+	if maximum.Load() != maxConcurrentLaunches {
+		t.Fatalf("maximum concurrency across batches = %d, want %d", maximum.Load(), maxConcurrentLaunches)
 	}
 }
 

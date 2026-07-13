@@ -68,7 +68,7 @@ UI 程序启动时必须请求管理员权限。
 - Windows 快捷方式 `.lnk`。
 - UWP 应用项。
 
-普通文件使用 ShellExecute 启动。UWP 项使用 `shell:AppsFolder\...` 或保存的 UWP AppUserModelID 启动。
+普通文件先快速检查路径存在且不是目录，再使用 ShellExecute 启动；UWP 项使用 `shell:AppsFolder\...` 或保存的 UWP AppUserModelID 启动。一键启动使用固定 worker 池和跨批次共享的并发限制，即使连续点击也最多同时启动 6 个程序；所有当前重叠启动批次完成后，失败结果合并到一个消息框。
 
 ### 关闭程序
 

@@ -116,6 +116,16 @@ func Launch(path string, isUWP bool) error {
 		}
 		return shellExecute(target, "")
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("程序文件不存在: %s", path)
+		}
+		return fmt.Errorf("检查程序文件 %s: %w", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("程序路径是目录: %s", path)
+	}
 	dir := filepath.Dir(path)
 	return shellExecute(path, dir)
 }
